@@ -1,0 +1,2 @@
+# Phase 1
+duckdb            # SQL over the raw parquet: inspection + filtering

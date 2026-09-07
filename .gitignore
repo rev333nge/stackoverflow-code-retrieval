@@ -1,0 +1,16 @@
+# Data — downloaded dumps and everything derived from them.
+# Large and fully reproducible from scripts, so never committed.
+data/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
