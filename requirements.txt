@@ -1,2 +1,3 @@
 # Phase 1
 duckdb            # SQL over the raw parquet: inspection + filtering
+beautifulsoup4    # HTML -> plain text cleaning (step 4)
