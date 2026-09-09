@@ -1,26 +1,9 @@
-"""
-Phase 1 - Step 6: build the qrels (query relevance judgments).
+"""Build qrels (query_id, doc_id, grade) from the corpus.
 
-For every evaluation query (a question flagged is_eval_query), we grade its
-own answers using signals that come from Stack Overflow itself - never our
-opinion:
+For each eval query, grade its own answers:
+    3 = accepted, 2 = score >= 4, 1 = score 1-3, 0 = score <= 0
+Acceptance overrides score. Unjudged docs are grade 0 by convention.
 
-    grade 3 = accepted answer      (the asker marked it as the solution)
-    grade 2 = score >= 4           (community clearly endorsed it)
-    grade 1 = score 1..3           (mildly useful)
-    grade 0 = score <= 0           (ignored or downvoted -> not relevant)
-
-Acceptance overrides score: an accepted answer is always grade 3, even if its
-score is low, because acceptance is the asker's explicit "this solved it".
-
-A qrels row is (query_id, doc_id, grade). We judge only each query's OWN
-answers; every other document in the corpus is implicitly grade 0 for that
-query (standard IR convention - unjudged == non-relevant).
-
-Input : data/processed/corpus.parquet
-Output: data/processed/qrels.parquet   (query_id, doc_id, grade)
-
-Usage:
     python scripts/build_qrels.py
 """
 

@@ -1,16 +1,6 @@
-"""
-Phase 1 - Step 4 check: eyeball the cleaned text and catch silent problems.
+"""Sanity-check the cleaned parquet: row counts, empty/length stats,
+leftover markup, and a couple of example bodies. Read-only.
 
-Reads the *_clean.parquet from clean_text.py and reports:
-  - row counts (must match the step-3 files exactly - nothing lost/duplicated)
-  - how many bodies came out empty (a spike would mean cleaning ate content)
-  - body length stats (sanity on how much text survived)
-  - whether HTML markup leaked through (stray '<p>' / '&lt;' in the output)
-  - a few full before/after examples, including one with a code block
-
-Read-only.
-
-Usage:
     python scripts/inspect_clean.py
 """
 

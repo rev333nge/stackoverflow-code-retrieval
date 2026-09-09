@@ -1,24 +1,9 @@
-"""
-Phase 1 - Step 5: flatten the cleaned Q&A into a flat search corpus.
+"""Flatten the cleaned Q&A into a search corpus, one doc per answer.
 
-BM25 wants a flat list of (doc_id, text) documents, not our two linked
-tables. Here we join answers to their question and emit ONE document per
-answer:
+doc text = title + answer body. Title, question body and answer body are
+also kept separately so the indexer can build title+question+answer too.
+answer_score and is_accepted ride along for the qrels step.
 
-    doc_id        = answer id
-    text          = question title + "\\n\\n" + answer body   (variant A)
-
-The question title, question body and answer body are ALSO kept as separate
-columns, so the indexing step (step 8) can assemble the alternative document
-    variant B = title + question body + answer body
-on the fly and let the metric decide - without reprocessing anything here.
-
-Relevance metadata (answer_score, is_accepted) rides along for step 6 (qrels).
-
-Input : data/processed/questions_clean.parquet, answers_clean.parquet
-Output: data/processed/corpus.parquet   (one row per answer)
-
-Usage:
     python scripts/build_corpus.py
 """
 

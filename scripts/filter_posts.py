@@ -1,25 +1,12 @@
-"""
-Phase 1 - Step 3: filter the raw dump to a clean pandas/numpy Q&A set.
+"""Filter the raw dump to pandas/numpy Q&A.
 
-Guiding principle: filter the LABELS, not the DATA.
+  questions.parquet - every pandas/numpy question. is_eval_query flags the
+    ones usable as test queries (accepted answer present, score >= 1, open).
+  answers.parquet   - all their answers, weak ones included (needed as
+    distractors at eval time).
 
-  data/processed/questions.parquet
-      Every pandas/numpy-tagged question. The boolean `is_eval_query` marks the
-      subset we trust enough to test with: it has an accepted answer that still
-      exists in the dump, a question score >= 1, and is not closed.
+Two passes over data/raw/posts/*.parquet (~36 GB). Run once.
 
-  data/processed/answers.parquet
-      Every answer to those questions - the good and the bad. The weak answers
-      are kept on purpose: they are the distractors a retrieval system must rank
-      *below* the good ones, otherwise the evaluation is artificially easy.
-
-Downstream the search corpus is (question title + answer body) for every
-answer; the evaluation queries are the questions where is_eval_query = true.
-
-Reads data/raw/posts/*.parquet (~36 GB) in two passes. Run once - the raw
-parquet is not needed afterwards.
-
-Usage:
     python scripts/filter_posts.py
 """
 
@@ -34,12 +21,10 @@ RAW_GLOB = "data/raw/posts/*.parquet"
 OUT_DIR = Path("data/processed")
 TMP_DIR = Path("data/tmp")
 
-# A question is "closed" when ClosedDate is a real date. The dump encodes
-# "never closed" as the epoch (1970), so any year >= 2005 means closed.
+# "never closed" is stored as the 1970 epoch, so year < 2005 means open.
 NOT_CLOSED = "year(ClosedDate) < 2005"
 
-# Pass 1: every pandas/numpy question. `is_eval_query` is provisional here;
-# the "accepted answer still exists" check needs the answers table (pass 3).
+# Pass 1: questions. is_eval_query is finalised in pass 3 (needs answers).
 BUILD_QUESTIONS = f"""
 CREATE OR REPLACE TABLE questions AS
 SELECT
@@ -60,8 +45,7 @@ WHERE PostTypeId = 1
     OR lower(CAST(Tags AS VARCHAR)) LIKE '%|numpy|%')
 """
 
-# Pass 2: every answer whose decoded ParentId points at one of those questions.
-# ParentId is a BLOB holding a numeric string -> decode BLOB to text, text to int.
+# Pass 2: answers of those questions. ParentId is a BLOB numeric string.
 BUILD_ANSWERS = f"""
 CREATE OR REPLACE TABLE answers AS
 WITH parsed AS (
@@ -79,8 +63,7 @@ FROM parsed
 WHERE question_id IN (SELECT id FROM questions)
 """
 
-# Pass 3: demote any eval query whose accepted answer was later deleted on
-# Stack Overflow and so never made it into the dump.
+# Pass 3: drop the eval flag if the accepted answer isn't in the dump.
 FINALISE_EVAL_FLAG = """
 UPDATE questions
 SET is_eval_query = FALSE

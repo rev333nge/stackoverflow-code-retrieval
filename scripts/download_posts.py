@@ -1,24 +1,8 @@
-"""
-Phase 1 - Step 1: download the Stack Overflow `posts` dump (parquet).
+"""Download the Stack Overflow posts parquet (2008-2024, ~38 GB).
 
-Source: ClickHouse's public parquet mirror of the official Stack Exchange
-Data Dump, hosted on S3 with no authentication required:
-    https://datasets-documentation.s3.eu-west-3.amazonaws.com/stackoverflow/parquet/posts/
+ClickHouse's public S3 mirror, no auth. Resumable: re-running skips
+complete files and continues partial ones. Final size is verified.
 
-We pull the `posts` table only (questions + answers + wikis), split by year,
-2008-2024, ~38 GB total. The Comments / Votes / Users tables are not needed:
-the relevance signal we care about (accepted answer, score) lives directly on
-the post rows.
-
-The download is resumable. Re-running the script:
-  - skips files that are already complete,
-  - continues partially downloaded files from where they stopped,
-  - retries transient network errors a few times per file.
-
-Each file's final size is checked against the size published in the bucket
-listing, so a truncated download is caught rather than silently used.
-
-Usage:
     python scripts/download_posts.py
 """
 
@@ -36,8 +20,7 @@ BASE_URL = (
     "/stackoverflow/parquet/posts"
 )
 
-# (filename, expected size in bytes). Sizes come from the S3 bucket listing and
-# are used to detect truncated or corrupted downloads.
+# (filename, size in bytes) from the S3 listing, used to verify downloads.
 FILES: list[tuple[str, int]] = [
     ("2008.parquet", 114_202_383),
     ("2009.parquet", 572_813_781),
@@ -65,7 +48,6 @@ TIMEOUT = 120             # seconds, per socket operation
 
 
 def human(n: float) -> str:
-    """Format a byte count as a human-readable string."""
     for unit in ("B", "KB", "MB", "GB", "TB"):
         if n < 1024:
             return f"{n:.1f} {unit}"
@@ -74,13 +56,11 @@ def human(n: float) -> str:
 
 
 def local_size(name: str) -> int:
-    """Bytes already on disk for `name`, or 0 if the file is missing."""
     path = DEST_DIR / name
     return path.stat().st_size if path.exists() else 0
 
 
 def download_one(name: str, expected: int) -> None:
-    """Download a single file, resuming if a partial copy already exists."""
     dest = DEST_DIR / name
     have = local_size(name)
 
@@ -103,8 +83,7 @@ def download_one(name: str, expected: int) -> None:
     start = time.time()
     downloaded = have
     with urlopen(req, timeout=TIMEOUT) as resp:
-        # If we asked for a byte range but the server sent the whole file
-        # (status 200, not 206), appending would corrupt the file. Bail out.
+        # asked to resume but got the whole file back -> don't append onto a partial
         if have and getattr(resp, "status", 200) != 206:
             raise RuntimeError(
                 f"server did not honour the resume request "
@@ -140,7 +119,6 @@ def download_one(name: str, expected: int) -> None:
 
 
 def check_disk_space(missing_bytes: int) -> None:
-    """Warn (but do not abort) if free space looks too tight."""
     free = shutil.disk_usage(DEST_DIR).free
     if free < missing_bytes * 1.05:
         print(

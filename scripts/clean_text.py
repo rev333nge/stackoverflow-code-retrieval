@@ -1,35 +1,9 @@
-"""
-Phase 1 - Step 4: turn the raw post HTML into clean plain text.
+"""HTML -> plain text for the filtered parquet, writing NEW *_clean.parquet.
 
-Reads the filtered parquet from step 3 and writes NEW files - the step-3
-originals are never modified, so the cleaning rules can change and this step
-can be re-run on its own.
+body (raw HTML) becomes body_clean; other columns carried over. Keeps code
+verbatim and link anchor text (not URLs), drops <img>, decodes entities,
+block tags become newlines, case preserved. Parsed across all cores.
 
-    data/processed/questions.parquet  ->  questions_clean.parquet
-    data/processed/answers.parquet    ->  answers_clean.parquet
-
-`body` (raw HTML) is replaced by `body_clean` (plain text). Every other column
-is carried over unchanged. Question titles are HTML-entity unescaped.
-
-Cleaning rules (all deliberate - see the Phase 1 notes):
-  - the ClickHouse dump byte-escaped the Body (newlines, quotes, backslashes
-    and every non-ASCII char written as literal '\\xHH' text). We reverse that
-    first so the text is real again (real newlines, "quotes", accents). The
-    escaping is consistent - a real backslash was stored as '\\x5C' - so
-    decoding every '\\xHH' is lossless. Angle brackets are NOT byte-escaped
-    (they use &lt; entities), so decoding never invents fake tags.
-  - code is KEPT: <pre> / <code> text passes through verbatim, indentation intact
-  - links: keep the visible anchor text, drop the href URL
-  - <img> dropped (no text content)
-  - block tags (<p>, <li>, <pre>, headings, ...) become newlines so words do
-    not run together across them
-  - HTML entities decoded (&lt; -> <)
-  - runs of 3+ blank lines collapsed to one; trailing spaces stripped
-  - letter case preserved (the Phase 2 tokenizer needs camelCase)
-
-The HTML parse is CPU-bound, so it runs across all cores.
-
-Usage:
     python scripts/clean_text.py
 """
 
@@ -46,8 +20,7 @@ from bs4 import BeautifulSoup
 
 PROCESSED = Path("data/processed")
 
-# Elements after which the output should have a line break.
-# (<br> is handled separately, before this list is used.)
+# block tags -> a newline after them (<br> handled separately)
 _BLOCK_TAGS = [
     "p", "div", "li", "ul", "ol", "pre", "blockquote", "table", "tr",
     "h1", "h2", "h3", "h4", "h5", "h6", "hr",
@@ -55,10 +28,8 @@ _BLOCK_TAGS = [
 _TRAILING_WS = re.compile(r"[ \t]+\n")
 _MANY_BLANKS = re.compile(r"\n{3,}")
 
-# A "&" that does NOT begin a well-formed entity. Python's html.parser crashes
-# on malformed numeric char refs like "&#46backends" (missing ';', trailing
-# letters), which real SO posts contain. We escape such stray "&" to "&amp;"
-# so they survive as literal text instead of blowing up the parser.
+# a "&" not starting a valid entity; escape it so html.parser doesn't choke
+# on malformed refs like "&#46backends"
 _STRAY_AMP = re.compile(
     r"&(?!(?:#\d+;|#x[0-9a-fA-F]+;|[a-zA-Z][a-zA-Z0-9]*;))"
 )
@@ -67,14 +38,8 @@ _HEX_ESC = re.compile(r"\\x([0-9A-Fa-f]{2})")
 
 
 def unescape_bytes(s: str) -> str:
-    """Reverse the dump's byte-escaping: every '\\xHH' -> that byte, then read
-    the whole thing back as UTF-8.
-
-    The source text is pure ASCII with '\\xHH' escapes, so mapping each escape
-    to codepoint U+00HH and then re-encoding as latin-1 rebuilds the exact
-    original byte stream; decoding that as UTF-8 restores multi-byte characters
-    (smart quotes, accents, dashes) as well as newlines/quotes/backslashes.
-    """
+    # The dump stores newlines/quotes/backslashes/non-ASCII as literal "\xHH".
+    # Map each back to its byte (via latin-1) and decode UTF-8 to get the real text.
     if "\\x" not in s:
         return s
     latin = _HEX_ESC.sub(lambda m: chr(int(m.group(1), 16)), s)
@@ -82,7 +47,6 @@ def unescape_bytes(s: str) -> str:
 
 
 def clean_html(raw: str | None) -> str:
-    """Raw post HTML -> plain text, keeping code and link anchor text."""
     if not raw:
         return ""
 
@@ -94,13 +58,10 @@ def clean_html(raw: str | None) -> str:
             br.replace_with("\n")
         for tag in soup.find_all(_BLOCK_TAGS):
             tag.insert_after("\n")
-        # get_text() already: emits anchor text but not href, ignores <img>,
-        # decodes entities, and keeps whitespace inside <pre> verbatim.
+        # get_text: anchor text without href, no <img>, entities decoded, <pre> kept
         text = soup.get_text()
     except Exception:
-        # Last-resort fallback for pathological markup: strip tags with a
-        # regex and decode entities directly. Loses block-newline handling,
-        # but never aborts the run over a single bad document.
+        # fallback for markup bs4 still can't parse: regex-strip tags
         text = html.unescape(_TAG.sub(" ", raw))
 
     text = _TRAILING_WS.sub("\n", text)
@@ -114,8 +75,7 @@ def parallel_clean(bodies: list[str]) -> list[str]:
     cleaned: list[str] = [""] * total
     t0 = time.time()
     with ProcessPoolExecutor() as pool:
-        # pool.map yields results in input order, so enumerate() gives the
-        # right index for each one.
+        # pool.map keeps input order
         for i, result in enumerate(pool.map(clean_html, bodies, chunksize=1000)):
             cleaned[i] = result
             if (i + 1) % 50_000 == 0:
@@ -135,8 +95,7 @@ def clean_questions(con: duckdb.DuckDBPyConnection) -> None:
     body_clean = parallel_clean([r[2] for r in rows])
     print(f"      sample: {body_clean[0][:160]!r}")
 
-    # Build the patch table in one columnar shot: bind the Python lists as
-    # DuckDB LISTs and UNNEST them position-wise (row i = ids[i], titles[i], ...).
+    # UNNEST the lists into a patch table, then join it back on id
     con.execute("DROP TABLE IF EXISTS patch")
     con.execute(
         "CREATE TABLE patch AS "

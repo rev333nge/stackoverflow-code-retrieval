@@ -1,19 +1,8 @@
-"""
-Phase 1 - Step 2: inspect the raw parquet before writing any filter.
+"""Dump one raw parquet file's schema, row counts, sample rows and tag counts.
 
-Opens ONE year file with DuckDB and prints:
-  - the full column schema (names + types),
-  - how many rows of each PostTypeId it holds,
-  - one real question row and one real answer row, field by field,
-  - how many questions in this one file are tagged pandas or numpy.
+Read-only. Used to check the real Tags/Body format before writing the filter.
 
-We look especially at the exact shape of `Tags` and `Body`, because the
-filter we write next depends on their real format - not on assumptions.
-Nothing here is written to disk; it only reads.
-
-Usage:
-    python scripts/inspect_parquet.py                       # uses 2024.parquet
-    python scripts/inspect_parquet.py data/raw/posts/2020.parquet
+    python scripts/inspect_parquet.py [data/raw/posts/2020.parquet]
 """
 
 from __future__ import annotations
@@ -59,7 +48,7 @@ def show_row(con: duckdb.DuckDBPyConnection, src: str, where: str, title: str) -
         return
     columns = [d[0] for d in con.description]
     for name, value in zip(columns, row):
-        # Several string columns come back as raw bytes (BLOB) - decode for display.
+        # string columns come back as BLOB
         if isinstance(value, (bytes, bytearray)):
             value = value.decode("utf-8", errors="replace")
         if name == "Body" and value is not None:
@@ -89,14 +78,14 @@ def show_tag_counts(con: duckdb.DuckDBPyConnection, src: str) -> None:
         FROM q
         """
     ).fetchone()
-    print("  Tags are pipe-delimited, e.g. |c++|stdvector|libc++| , so we match '|pandas|'.")
+    print("  Tags are pipe-delimited, e.g. |c++|stdvector|libc++|")
     print(f"  pandas: {row[0]:,}")
     print(f"  numpy : {row[1]:,}")
     print(f"  either: {row[2]:,}")
 
 
 def show_sentinels(con: duckdb.DuckDBPyConnection, src: str) -> None:
-    rule("HOW 'MISSING' IS ENCODED  (ClickHouse uses sentinels, not NULL)")
+    rule("HOW 'MISSING' IS ENCODED  (sentinels, not NULL)")
     row = con.execute(
         f"""
         SELECT
@@ -148,7 +137,7 @@ def main() -> None:
         sys.exit(f"File not found: {path}\n(has the download reached this file?)")
 
     # DuckDB wants forward slashes even on Windows.
-    src = f"read_parquet('{path.as_posix()}')"
+    src = f"read_parquet('{path.as_posix()}')"  # forward slashes on Windows
     con = duckdb.connect()
 
     print(f"Inspecting: {path}")
