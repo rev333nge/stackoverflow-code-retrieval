@@ -54,6 +54,8 @@ TRAIN / VAL / TEST — split by TIME, not randomly
 
 BM25 SETTINGS (Phase 1 baseline)
     library    bm25s
-    tokenizer  lowercase + split on non-alphanumeric — basic on purpose;
-               Phase 2 upgrades it for code (pd.merge, snake_case)
+    tokenizer  Phase 1: lowercase + split on non-alphanumeric (basic).
+               Phase 2: code-aware — keeps np.array / read_csv / DataFrame
+               intact alongside their parts, drops pure numbers. (Stemming
+               was tried and dropped; see 02_results.txt.)
     k1 = 1.2   b = 0.75    (standard Lucene defaults)

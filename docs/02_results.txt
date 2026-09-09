@@ -1,41 +1,47 @@
 STACKOVERFLOW CODE SEARCH — RESULTS
 ===================================
 
-BM25 BASELINE  (Phase 1)  —  variant A, TEST set, 19,065 queries
-    NDCG@10      0.6893
-    MRR@10       0.7190
-    Recall@100   0.9309
+PHASE PROGRESSION  (variant A, TEST set, 19,065 queries)
+    phase                        NDCG@10   MRR@10   Recall@100
+    1  BM25 baseline              0.6893   0.7190     0.9309
+    2  code-aware tokenizer       0.7148   0.7437     0.9448    (+3.7% NDCG)
 
-    This is the line every later phase must beat.
+    Each phase must beat the last on the held-out test set.
 
 
-WHAT THE NUMBERS MEAN
-    NDCG@10 0.69     ranking quality in the top 10 (1.0 = perfect). Relevant
-                     answers land near the top, but often not exactly at #1.
-    MRR@10  0.72     the first useful answer sits around rank ~1.4 on average.
-    Recall@100 0.93  93% of relevant answers appear somewhere in the top 100.
+WHAT THE METRICS MEAN
+    NDCG@10     ranking quality in the top 10 (1.0 = perfect)
+    MRR@10      how soon the first useful answer appears (avg 1/rank)
+    Recall@100  % of relevant answers found anywhere in the top 100
 
 
 KEY READ — retrieval is strong, RANKING is the gap
-    Recall@100 is high (0.93) but NDCG@10 is lower (0.69): BM25 almost always
-    FINDS the right answers, it just doesn't always rank them at the top.
+    Recall@100 ~0.94 but NDCG@10 ~0.71: the right answers are almost always
+    FOUND, just not always ranked at the top.
         -> ranking has the most room       -> Phase 6 (learning-to-rank)
-        -> the ~7% never retrieved are
+        -> the ~6% never retrieved are
            synonym / typo misses           -> Phase 3 (dense retrieval)
 
 
-VARIANT CHOICE  (decided on VAL, never on test)
-                                 NDCG@10   MRR@10   Recall@100
-    A  title + answer             0.6865   0.7179     0.9334   <- chosen
-    B  title + question + answer  0.6556   0.6619     0.9291
-    Adding the question body hurt every metric: it doubles document length
-    (dilution + length penalty) and repeats across a question's answers (noise).
+PHASE 1 — BM25 baseline
+    Variant A (title + answer) beat B (title + question + answer) on val, so
+    the document is title + answer; the question body added length and noise.
+        variant A   val  NDCG@10 0.6865    test 0.6893   (stable, no overfit)
 
 
-VAL vs TEST  (variant A)  —  stable, no overfitting
-                 NDCG@10   MRR@10   Recall@100
-    val           0.6865   0.7179     0.9334
-    test          0.6893   0.7190     0.9309
+PHASE 2 — code-aware tokenizer
+    Keep code identifiers intact instead of shredding them:
+        np.array  -> np, array, np.array       read_csv  -> read, csv, read_csv
+        DataFrame -> data, frame, dataframe     pure numbers dropped
+    Parts help recall; the rare compound tokens (high IDF) sharpen ranking.
+        val  0.7104 / 0.7412 / 0.9448      test  0.7148 / 0.7437 / 0.9448
+
+    Stemming — TRIED, DROPPED (negative result)
+        English stemming (arrays -> array, merging -> merg) HURT every metric
+        on val: NDCG@10 0.7104 -> 0.6400. Stemming lowers the IDF of exact
+        technical terms — the signal code search leans on — so precision and
+        even recall fell. Kept the unstemmed tokenizer.
 
 
-
+NEXT
+    Phase 3   dense retrieval (embeddings + FAISS)   — target the ~6% misses
