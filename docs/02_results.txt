@@ -1,0 +1,41 @@
+STACKOVERFLOW CODE SEARCH — RESULTS
+===================================
+
+BM25 BASELINE  (Phase 1)  —  variant A, TEST set, 19,065 queries
+    NDCG@10      0.6893
+    MRR@10       0.7190
+    Recall@100   0.9309
+
+    This is the line every later phase must beat.
+
+
+WHAT THE NUMBERS MEAN
+    NDCG@10 0.69     ranking quality in the top 10 (1.0 = perfect). Relevant
+                     answers land near the top, but often not exactly at #1.
+    MRR@10  0.72     the first useful answer sits around rank ~1.4 on average.
+    Recall@100 0.93  93% of relevant answers appear somewhere in the top 100.
+
+
+KEY READ — retrieval is strong, RANKING is the gap
+    Recall@100 is high (0.93) but NDCG@10 is lower (0.69): BM25 almost always
+    FINDS the right answers, it just doesn't always rank them at the top.
+        -> ranking has the most room       -> Phase 6 (learning-to-rank)
+        -> the ~7% never retrieved are
+           synonym / typo misses           -> Phase 3 (dense retrieval)
+
+
+VARIANT CHOICE  (decided on VAL, never on test)
+                                 NDCG@10   MRR@10   Recall@100
+    A  title + answer             0.6865   0.7179     0.9334   <- chosen
+    B  title + question + answer  0.6556   0.6619     0.9291
+    Adding the question body hurt every metric: it doubles document length
+    (dilution + length penalty) and repeats across a question's answers (noise).
+
+
+VAL vs TEST  (variant A)  —  stable, no overfitting
+                 NDCG@10   MRR@10   Recall@100
+    val           0.6865   0.7179     0.9334
+    test          0.6893   0.7190     0.9309
+
+
+

@@ -1,0 +1,59 @@
+STACKOVERFLOW CODE SEARCH — DATA & DESIGN
+=========================================
+
+GOAL
+  Type a plain-English question, search a pool of Stack Overflow answers, and
+  rank the best answers first. Built in phases: each phase adds one technique
+  and is measured against the previous one. This file covers the Phase 1 setup.
+
+
+DATASET
+  Source : official Stack Exchange Data Dump, via ClickHouse's public parquet
+           mirror (posts table, 2008 - Mar 2024).
+  Slice  : questions tagged 'pandas' or 'numpy' — one coherent domain.
+  Why    : a focused domain makes the metrics meaningful and gives the later
+           code-aware tokenizer (Phase 2) real material to work on.
+
+
+FILTERING  (principle: filter the LABELS, not the DATA)
+  Keep every pandas/numpy question and ALL of its answers — weak answers stay
+  on purpose, as distractors the ranker must push down.
+  A question counts as an EVAL QUERY (trustworthy ground truth) only if:
+    - it has an accepted answer that exists in the dump
+    - its score >= 1
+    - it is not closed
+
+
+FINAL COUNTS
+  documents (answers) . . . 537,134
+  questions . . . . . . . . 379,088
+  eval queries  . . . . . . 137,131
+
+
+DOCUMENT = one answer. Two ways to build its searchable text were tested:
+    Variant A : question title + answer body                  <- chosen
+    Variant B : question title + question body + answer body
+  A won (see 02_results.txt); the question body added length and noise.
+
+
+RELEVANCE GRADES (qrels) — from Stack Overflow's own signals, not our opinion
+    3  accepted answer        (asker marked it as the solution)
+    2  answer score >= 4      (community endorsed)
+    1  answer score 1 - 3
+    0  answer score <= 0      (ignored / downvoted)
+  245,287 (query, answer) judgments over the 137,131 eval queries.
+
+
+TRAIN / VAL / TEST — split by TIME, not randomly
+    train   2008 - 2020    102,143    tune / train models
+    val     2021            15,923    pick options (e.g. variant A vs B)
+    test    2022 - 2024     19,065    final score, touched once
+  Splitting by date stops near-duplicate questions leaking across the sets and
+  mirrors serving questions asked in the future.
+
+
+BM25 SETTINGS (Phase 1 baseline)
+    library    bm25s
+    tokenizer  lowercase + split on non-alphanumeric — basic on purpose;
+               Phase 2 upgrades it for code (pd.merge, snake_case)
+    k1 = 1.2   b = 0.75    (standard Lucene defaults)
