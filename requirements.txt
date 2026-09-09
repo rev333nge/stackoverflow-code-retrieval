@@ -1,3 +1,5 @@
 # Phase 1
 duckdb            # SQL over the raw parquet: inspection + filtering
 beautifulsoup4    # HTML -> plain text cleaning (step 4)
+bm25s             # BM25 index + retrieval (step 8)
+numpy
