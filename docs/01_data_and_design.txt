@@ -59,3 +59,10 @@ BM25 SETTINGS (Phase 1 baseline)
                intact alongside their parts, drops pure numbers. (Stemming
                was tried and dropped; see 02_results.txt.)
     k1 = 1.2   b = 0.75    (standard Lucene defaults)
+
+DENSE RETRIEVAL (Phase 3)
+    model      BAAI/bge-base-en-v1.5 (768-d), fp16 on the GPU
+    encode     documents plain; queries get bge's instruction prefix
+    index      FAISS IndexFlatIP over L2-normalized vectors (= cosine, exact)
+               HNSW/IVF is a drop-in swap when scaling to millions of docs
+    truncation answers over ~512 tokens are cut (chunking deferred to Phase 7)

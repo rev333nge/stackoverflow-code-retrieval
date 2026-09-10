@@ -5,6 +5,7 @@ PHASE PROGRESSION  (variant A, TEST set, 19,065 queries)
     phase                        NDCG@10   MRR@10   Recall@100
     1  BM25 baseline              0.6893   0.7190     0.9309
     2  code-aware tokenizer       0.7148   0.7437     0.9448    (+3.7% NDCG)
+    3  dense retrieval (bge)      0.7989   0.8288     0.9788    (+11.8% NDCG)
 
     Each phase must beat the last on the held-out test set.
 
@@ -15,12 +16,13 @@ WHAT THE METRICS MEAN
     Recall@100  % of relevant answers found anywhere in the top 100
 
 
-KEY READ — retrieval is strong, RANKING is the gap
-    Recall@100 ~0.94 but NDCG@10 ~0.71: the right answers are almost always
-    FOUND, just not always ranked at the top.
-        -> ranking has the most room       -> Phase 6 (learning-to-rank)
-        -> the ~6% never retrieved are
-           synonym / typo misses           -> Phase 3 (dense retrieval)
+KEY READ
+    BM25: recall high (0.94) but NDCG lower (0.71) -> found, not well ranked.
+    Dense fixed much of that: recall 0.98 (misses halved) AND better ranking,
+    because it matches meaning (flip = reverse, typos, paraphrases) not strings.
+        -> remaining ranking headroom      -> Phase 6 (learning-to-rank)
+        -> BM25 still wins on exact terms
+           (pd.merge, error strings)        -> Phase 4 diagnoses, Phase 5 fuses
 
 
 PHASE 1 — BM25 baseline
@@ -43,5 +45,16 @@ PHASE 2 — code-aware tokenizer
         even recall fell. Kept the unstemmed tokenizer.
 
 
+PHASE 3 — dense retrieval (embeddings + FAISS)
+    Encode each document into a 768-d meaning-vector with bge-base-en-v1.5
+    (fp16 on GPU), index with FAISS flat (cosine). Search embeds the query and
+    returns nearest vectors. Matches meaning, not keywords, so synonyms / typos /
+    paraphrases that BM25 scored 0 now hit.
+        val   0.7929 / 0.8228 / 0.9798     test  0.7989 / 0.8288 / 0.9788
+    Biggest single-phase jump so far (+11.8% NDCG vs Phase 2). Recall miss rate
+    5.5% -> 2.0%.
+
+
 NEXT
-    Phase 3   dense retrieval (embeddings + FAISS)   — target the ~6% misses
+    Phase 4   failure analysis  — where BM25 wins vs dense, and why
+    Phase 5   hybrid (RRF)      — fuse both -> dense recall + BM25 precision
