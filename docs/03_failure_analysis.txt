@@ -1,0 +1,73 @@
+STACKOVERFLOW CODE SEARCH — FAILURE ANALYSIS (BM25 vs dense)
+===========================================================
+
+Question: do BM25 and dense fail on the SAME queries or DIFFERENT ones?
+If different, fusing them should beat either alone.
+
+
+PER-QUERY NDCG@10  (val, 15,923 queries)
+    BM25 mean             0.7104
+    dense mean            0.7929
+    oracle (best-of-both) 0.8563    <- ceiling if a perfect referee picked the
+                                       better method per query
+    correlation(bm,de)    0.444     (moderate -> they miss different queries)
+
+    Oracle sits +0.063 above dense alone, correlation is only 0.44
+    -> genuine complementarity, hybrid has real headroom.
+
+    buckets:
+        dense wins      28.1%
+        BM25  wins      14.6%
+        tie / both ok   53.6%
+        both fail        3.7%
+
+
+WHERE EACH WINS
+    dense wins  - query worded differently from the answer's exact words;
+                  BM25 drifts to a wrong-but-wordy match.
+                  e.g. "Read CSV file with Python function" -> BM25 grabbed
+                  "convert a dataframe from raw text"; dense found the right one.
+    BM25 wins   - distinctive / exact terms where dense drifts to a paraphrase
+                  of a DIFFERENT question.
+                  e.g. "groupby and convert rows into list" -> dense went to
+                  "How to group dataframe rows into list" (another question).
+
+
+TWO HONEST CAVEATS
+1. Title echo. Queries are question titles, and documents are title+answer, so
+   the query text sits inside its own answers' documents. This makes the task
+   easier than free-text search and props up exact matching. See the ablation.
+
+2. Near-duplicate label noise. Generic questions ("Transpose a DataFrame") are
+   asked many times. Both methods return a good answer from a DIFFERENT, near-
+   duplicate question -> graded 0 by our qrels -> counts as a "failure" though
+   the result is actually helpful. Some of the 3.7% both-fail is this, not a
+   real retrieval miss.
+
+
+ABLATION — how much is the title doing?  (val, documents = answer body only)
+    method               NDCG@10   MRR@10   Recall@100
+    dense  title+answer   0.7929   0.8228     0.9798
+    dense  answer-only    0.0614   0.0612     0.1939
+    BM25   title+answer   0.7104   0.7412     0.9448
+    BM25   answer-only    0.0408   0.0397     0.1269
+
+    Both collapse without the title (~92-94% of the score gone). A hypothesis
+    that dense would survive on answer content was FALSIFIED - it cratered too.
+
+    Why: an answer body alone is generic ("use np.flip()") and appears under
+    hundreds of similar questions; the title is the anchor that says WHICH
+    question an answer belongs to - for keywords AND for meaning. Remove it and
+    neither method can pick out the specific labelled answer.
+
+    Note: the title contributes ~equally to both (not a BM25-only crutch), so
+    the title+answer comparison is fair. Dense's real edge is QUERY-SIDE
+    robustness (synonyms/typos/paraphrases of the query), a different axis the
+    live demo showed - not reading answer content better.
+
+
+CONCLUSION
+    BM25 and dense are complementary on the real (title+answer) system, so a
+    hybrid is worth building (next). Keep in mind all scores describe the
+    "title query -> find this question's answers" task, which leans on titles
+    for every method; free-text queries would score lower across the board.
