@@ -8,12 +8,12 @@ If different, fusing them should beat either alone.
 PER-QUERY NDCG@10  (val, 15,923 queries)
     BM25 mean             0.7104
     dense mean            0.7929
-    oracle (best-of-both) 0.8563    <- ceiling if a perfect referee picked the
-                                       better method per query
-    correlation(bm,de)    0.444     (moderate -> they miss different queries)
+    oracle (best-of-both) 0.8563    (ceiling if something picked the better
+                                      method on every query)
+    correlation(bm,de)    0.444     (moderate — they miss different queries)
 
-    Oracle sits +0.063 above dense alone, correlation is only 0.44
-    -> genuine complementarity, hybrid has real headroom.
+    Oracle is 0.063 above dense alone and correlation is only 0.44. That's
+    real complementarity, so there's actual headroom for a hybrid.
 
     buckets:
         dense wins      28.1%
@@ -23,14 +23,16 @@ PER-QUERY NDCG@10  (val, 15,923 queries)
 
 
 WHERE EACH WINS
-    dense wins  - query worded differently from the answer's exact words;
-                  BM25 drifts to a wrong-but-wordy match.
-                  e.g. "Read CSV file with Python function" -> BM25 grabbed
-                  "convert a dataframe from raw text"; dense found the right one.
-    BM25 wins   - distinctive / exact terms where dense drifts to a paraphrase
-                  of a DIFFERENT question.
-                  e.g. "groupby and convert rows into list" -> dense went to
-                  "How to group dataframe rows into list" (another question).
+    dense wins  - the query is worded differently from the answer's actual
+                  words, and BM25 drifts to a wrong but wordy match.
+                  e.g. for "Read CSV file with Python function", BM25 grabbed
+                  a page about "convert a dataframe from raw text"; dense got
+                  the right one.
+    BM25 wins   - distinctive or exact terms, where dense drifts toward a
+                  paraphrase of a different question.
+                  e.g. for "groupby and convert rows into list", dense landed
+                  on "How to group dataframe rows into list" - a different
+                  question with a similar title.
 
 
 TWO HONEST CAVEATS
@@ -38,11 +40,11 @@ TWO HONEST CAVEATS
    the query text sits inside its own answers' documents. This makes the task
    easier than free-text search and props up exact matching. See the ablation.
 
-2. Near-duplicate label noise. Generic questions ("Transpose a DataFrame") are
-   asked many times. Both methods return a good answer from a DIFFERENT, near-
-   duplicate question -> graded 0 by our qrels -> counts as a "failure" though
-   the result is actually helpful. Some of the 3.7% both-fail is this, not a
-   real retrieval miss.
+2. Near-duplicate label noise. Generic questions ("Transpose a DataFrame") get
+   asked over and over. Both methods sometimes return a good answer from a
+   different, near-duplicate question. Our qrels grade that 0, so it counts
+   as a "failure" even though the result is actually useful. Some of the
+   3.7% both-fail bucket is this, not an actual retrieval miss.
 
 
 ABLATION — how much is the title doing?  (val, documents = answer body only)
@@ -52,22 +54,25 @@ ABLATION — how much is the title doing?  (val, documents = answer body only)
     BM25   title+answer   0.7104   0.7412     0.9448
     BM25   answer-only    0.0408   0.0397     0.1269
 
-    Both collapse without the title (~92-94% of the score gone). A hypothesis
-    that dense would survive on answer content was FALSIFIED - it cratered too.
+    Both collapse without the title (~92-94% of the score gone). I expected
+    dense to hold up better on answer content alone, since it's supposed to
+    read meaning rather than match words - it didn't, it cratered too.
 
-    Why: an answer body alone is generic ("use np.flip()") and appears under
-    hundreds of similar questions; the title is the anchor that says WHICH
-    question an answer belongs to - for keywords AND for meaning. Remove it and
-    neither method can pick out the specific labelled answer.
+    Why: an answer body by itself is generic ("use np.flip()") and shows up
+    under hundreds of similar questions. The title is what ties a generic
+    answer to its specific question, for keyword matching and for meaning
+    alike. Take it away and neither method can tell which labelled answer is
+    the right one.
 
-    Note: the title contributes ~equally to both (not a BM25-only crutch), so
-    the title+answer comparison is fair. Dense's real edge is QUERY-SIDE
-    robustness (synonyms/typos/paraphrases of the query), a different axis the
-    live demo showed - not reading answer content better.
+    So the title matters about equally to both methods - it's not just a
+    BM25 crutch, and the title+answer comparison stays fair. Dense's real
+    advantage is on the query side (handling synonyms, typos, paraphrases),
+    not from reading answer content more deeply.
 
 
 CONCLUSION
     BM25 and dense are complementary on the real (title+answer) system, so a
-    hybrid is worth building (next). Keep in mind all scores describe the
-    "title query -> find this question's answers" task, which leans on titles
-    for every method; free-text queries would score lower across the board.
+    hybrid is worth building next. Keep in mind these scores are all for the
+    "title as query, find this question's answers" task, which leans on
+    titles no matter the method - free-text queries would score lower across
+    the board.

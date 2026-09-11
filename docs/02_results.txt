@@ -6,8 +6,10 @@ PHASE PROGRESSION  (variant A, TEST set, 19,065 queries)
     1  BM25 baseline              0.6893   0.7190     0.9309
     2  code-aware tokenizer       0.7148   0.7437     0.9448    (+3.7% NDCG)
     3  dense retrieval (bge)      0.7989   0.8288     0.9788    (+11.8% NDCG)
+    5  hybrid (RRF, k=5)          0.8160   0.8436     0.9871    (+2.1% NDCG)
 
-    Each phase must beat the last on the held-out test set.
+    Each phase must beat the last on the held-out test set. (Phase 4 is
+    analysis, not a new model — no row.)
 
 
 WHAT THE METRICS MEAN
@@ -55,6 +57,56 @@ PHASE 3 — dense retrieval (embeddings + FAISS)
     5.5% -> 2.0%.
 
 
+PHASE 5 — hybrid (RRF)
+    Reciprocal Rank Fusion merges the BM25 and dense ranked lists using rank
+    position only, not raw scores — BM25 scores and cosine similarities live
+    on different scales, so averaging them directly wouldn't mean anything.
+    For each candidate doc: score = sum of 1/(k+rank) over whichever list(s)
+    it appears in; sort by that score, keep the top 100. k controls how much
+    a rank difference near the top gets trusted — small k makes rank 1 worth
+    a lot more than rank 2, large k treats nearby ranks as roughly tied.
+
+    k = 60 is the standard default from the original 2009 RRF paper, but
+    that's popular because RRF tends not to be very sensitive to k, not
+    because 60 is right for this data specifically. Swept it on val instead
+    of assuming it (val, 15,923 queries):
+
+        k     NDCG@10   MRR@10   Recall@100
+        1      0.8107   0.8402     0.9876
+        2      0.8119   0.8416     0.9876
+        5      0.8123   0.8414     0.9876
+        10     0.8119   0.8401     0.9876
+        20     0.8089   0.8362     0.9876
+        40     0.8039   0.8328     0.9876
+        60     0.8014   0.8312     0.9876
+        100    0.7998   0.8300     0.9876
+        200    0.7991   0.8293     0.9876
+
+    NDCG@10 peaks at k=5, not at the literature default — the curve rises
+    from k=1 to k=5 then falls off steadily through k=200, a real peak rather
+    than the edge of the grid, so it's not just noise from trying several
+    values on val. MRR@10 peaks at k=2, but k=5 is within 0.0002 of it —
+    close enough to call it the same. Picked k=5.
+
+    Recall@100 is flat across every k. Makes sense once you separate what k
+    actually controls: it reorders candidates within the merged pool, it
+    doesn't change who's in the pool. A relevant doc that either method
+    retrieves at all tends to come back at a decent rank already (that's
+    where BM25/dense's own ~93-98% recall@100 came from), so its combined
+    score clears the top-100 cutoff no matter what k is. k moves it from,
+    say, rank 40 to rank 8 inside that cutoff — which NDCG@10 and MRR@10
+    notice, since they only look at the top 10, and recall doesn't.
+
+        val (k=5)    0.8123 / 0.8414 / 0.9876
+        test (k=5)   0.8160 / 0.8436 / 0.9871
+
+    Beats dense alone on both splits, every metric. Confirms the Phase 4
+    read: BM25 and dense are complementary, and fusing them recovers some of
+    that oracle headroom (val oracle 0.8563 vs val dense 0.7929, gap 0.0634;
+    hybrid closes it to 0.0440 — about 30% of the gap gone).
+
+
 NEXT
-    Phase 4   failure analysis  — where BM25 wins vs dense, and why
-    Phase 5   hybrid (RRF)      — fuse both -> dense recall + BM25 precision
+    Phase 6   learning-to-rank (LambdaMART) — go after what's left of the
+              oracle gap with a model that combines both methods' signals
+              instead of a fixed formula.

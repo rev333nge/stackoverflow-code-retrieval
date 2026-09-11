@@ -31,9 +31,9 @@ FINAL COUNTS
 
 
 DOCUMENT = one answer. Two ways to build its searchable text were tested:
-    Variant A : question title + answer body                  <- chosen
+    Variant A : question title + answer body                  (chosen)
     Variant B : question title + question body + answer body
-  A won (see 02_results.txt); the question body added length and noise.
+  A won (see 02_results.txt). The question body just added length and noise.
 
 
 RELEVANCE GRADES (qrels) — from Stack Overflow's own signals, not our opinion

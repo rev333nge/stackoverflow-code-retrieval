@@ -1,9 +1,14 @@
 """Evaluate a retriever against the qrels: NDCG@10, MRR@10, Recall@100.
 
-    python scripts/evaluate.py [bm25|dense] <variant> <split>
-      method  = bm25 (default) | dense
-      variant = a | b     (which index)
+    python scripts/evaluate.py [bm25|dense|hybrid] <variant> <split> [k]
+      method  = bm25 (default) | dense | hybrid
+      variant = a | b       (which index)
       split   = val | test
+      k       = RRF constant for hybrid only (default 60)
+
+    python scripts/evaluate.py hybrid <variant> <split> --sweep[=k1,k2,...]
+      Runs BM25 + dense retrieval once, then fuses with each k in the list
+      (default 10,20,40,60,100,200) and prints a comparison table.
 
 Compare on val, then report the winner on test.
 """
@@ -79,18 +84,31 @@ def dcg(grades) -> float:
     return sum((2**g - 1) / math.log2(i + 2) for i, g in enumerate(grades))
 
 
-def evaluate(method: str, variant: str, split: str) -> None:
-    con = duckdb.connect()
-    qrels = load_qrels(con)
-    qids, texts = load_split(con, split)
-    print(f"{method}, variant {variant}, split {split}: {len(qids):,} queries")
+def to_doc_ids(index_results, doc_ids_arr):
+    """Translate a retriever's per-query row of internal indices into real doc_ids."""
+    return [[int(doc_ids_arr[r]) for r in row] for row in index_results]
 
-    print("retrieving ...")
-    if method == "bm25":
-        results, doc_ids = retrieve_bm25(variant, texts)
-    else:
-        results, doc_ids = retrieve_dense(variant, texts)
 
+def fuse_rrf(bm25_lists, dense_lists, k: int, top: int = RETRIEVE_K):
+    """Reciprocal Rank Fusion: merge two per-query doc_id rankings into one.
+
+    RRF(d) = sum over methods of 1 / (k + rank_method(d)); a doc missing from
+    a method's list contributes 0 for that method. Ranked descending, top-`top` kept.
+    """
+    fused = []
+    for bm25_row, dense_row in zip(bm25_lists, dense_lists):
+        scores: dict[int, float] = {}
+        for rank, did in enumerate(bm25_row, 1):
+            scores[did] = scores.get(did, 0.0) + 1.0 / (k + rank)
+        for rank, did in enumerate(dense_row, 1):
+            scores[did] = scores.get(did, 0.0) + 1.0 / (k + rank)
+        ranked = sorted(scores, key=scores.get, reverse=True)[:top]
+        fused.append(ranked)
+    return fused
+
+
+def score(qids, doc_id_lists, qrels):
+    """NDCG@10 / MRR@10 / Recall@100 given, per query, a ranked list of real doc_ids."""
     ndcg_sum = mrr_sum = recall_sum = 0.0
     n = 0
     for qi, qid in enumerate(qids):
@@ -98,7 +116,7 @@ def evaluate(method: str, variant: str, split: str) -> None:
         if not judged:
             continue
         n += 1
-        graded = [judged.get(int(doc_ids[int(r)]), 0) for r in results[qi]]
+        graded = [judged.get(did, 0) for did in doc_id_lists[qi]]
 
         ideal = sorted(judged.values(), reverse=True)[:NDCG_K]
         idcg = dcg(ideal)
@@ -112,26 +130,79 @@ def evaluate(method: str, variant: str, split: str) -> None:
         total_rel = sum(1 for g in judged.values() if g >= 1)
         got_rel = sum(1 for g in graded[:RECALL_K] if g >= 1)
         recall_sum += (got_rel / total_rel) if total_rel > 0 else 0.0
+    return ndcg_sum / n, mrr_sum / n, recall_sum / n, n
 
+
+def evaluate(method: str, variant: str, split: str, k_rrf: int = 60, sweep=None) -> None:
+    con = duckdb.connect()
+    qrels = load_qrels(con)
+    qids, texts = load_split(con, split)
+    print(f"{method}, variant {variant}, split {split}: {len(qids):,} queries")
+
+    print("retrieving ...")
+    if method == "bm25":
+        idx_results, doc_ids_arr = retrieve_bm25(variant, texts)
+        doc_id_lists = to_doc_ids(idx_results, doc_ids_arr)
+    elif method == "dense":
+        idx_results, doc_ids_arr = retrieve_dense(variant, texts)
+        doc_id_lists = to_doc_ids(idx_results, doc_ids_arr)
+    elif method == "hybrid":
+        bm25_idx, bm25_docids_arr = retrieve_bm25(variant, texts)
+        dense_idx, dense_docids_arr = retrieve_dense(variant, texts)
+        bm25_lists = to_doc_ids(bm25_idx, bm25_docids_arr)
+        dense_lists = to_doc_ids(dense_idx, dense_docids_arr)
+
+        if sweep:
+            print("\n" + "=" * 52)
+            print(f"HYBRID (RRF) sweep  variant={variant}  split={split}")
+            print("=" * 52)
+            print(f"  {'k':>6}  {'NDCG@10':>8}  {'MRR@10':>8}  {'Recall@100':>10}")
+            for kv in sweep:
+                fused = fuse_rrf(bm25_lists, dense_lists, kv)
+                ndcg, mrr, recall, n = score(qids, fused, qrels)
+                print(f"  {kv:>6}  {ndcg:>8.4f}  {mrr:>8.4f}  {recall:>10.4f}")
+            print(f"\n  ({n:,} queries scored)")
+            return
+        doc_id_lists = fuse_rrf(bm25_lists, dense_lists, k_rrf)
+    else:
+        raise SystemExit(f"unknown method: {method}")
+
+    ndcg, mrr, recall, n = score(qids, doc_id_lists, qrels)
+    header = f"{method.upper()}  variant={variant}  split={split}"
+    if method == "hybrid":
+        header += f"  k={k_rrf}"
     print("\n" + "=" * 44)
-    print(f"{method.upper()}  variant={variant}  split={split}")
+    print(header)
     print("=" * 44)
     print(f"  queries scored : {n:,}")
-    print(f"  NDCG@{NDCG_K}       : {ndcg_sum / n:.4f}")
-    print(f"  MRR@{MRR_K}        : {mrr_sum / n:.4f}")
-    print(f"  Recall@{RECALL_K}    : {recall_sum / n:.4f}")
+    print(f"  NDCG@{NDCG_K}       : {ndcg:.4f}")
+    print(f"  MRR@{MRR_K}        : {mrr:.4f}")
+    print(f"  Recall@{RECALL_K}    : {recall:.4f}")
 
 
 def main() -> None:
     args = sys.argv[1:]
     method = "bm25"
-    if args and args[0] in ("bm25", "dense"):
+    if args and args[0] in ("bm25", "dense", "hybrid"):
         method = args.pop(0)
+
+    sweep = None
+    remaining = []
+    for a in args:
+        if a == "--sweep":
+            sweep = [10, 20, 40, 60, 100, 200]
+        elif a.startswith("--sweep="):
+            sweep = [int(x) for x in a.split("=", 1)[1].split(",")]
+        else:
+            remaining.append(a)
+    args = remaining
+
     variant = args[0].lower() if len(args) > 0 else "a"
     split = args[1].lower() if len(args) > 1 else "val"
+    k_rrf = int(args[2]) if len(args) > 2 else 60
     if split not in ("val", "test"):
         raise SystemExit("split must be 'val' or 'test'")
-    evaluate(method, variant, split)
+    evaluate(method, variant, split, k_rrf=k_rrf, sweep=sweep)
 
 
 if __name__ == "__main__":
