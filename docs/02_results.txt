@@ -7,6 +7,7 @@ PHASE PROGRESSION  (variant A, TEST set, 19,065 queries)
     2  code-aware tokenizer       0.7148   0.7437     0.9448    (+3.7% NDCG)
     3  dense retrieval (bge)      0.7989   0.8288     0.9788    (+11.8% NDCG)
     5  hybrid (RRF, k=5)          0.8160   0.8436     0.9871    (+2.1% NDCG)
+    6  LTR (LambdaMART)           0.8370   0.8649     0.9863    (+2.6% NDCG)
 
     Each phase must beat the last on the held-out test set. (Phase 4 is
     analysis, not a new model — no row.)
@@ -106,7 +107,63 @@ PHASE 5 — hybrid (RRF)
     hybrid closes it to 0.0440 — about 30% of the gap gone).
 
 
+PHASE 6 — learning-to-rank (LambdaMART)
+    Instead of a fixed fusion formula (RRF), train a model to combine the
+    retrieval signals. LambdaMART = gradient-boosted trees (LightGBM) trained
+    on a ranking loss: it learns from PAIRS of docs within a query ("this one
+    should rank above that one"), and each pair's weight is scaled by how much
+    swapping it would change NDCG@10 — so it spends its effort on the top of
+    the list, which is what we actually measure.
+
+    This is a RERANKER, not a new retriever. Candidate pool per query = the
+    same BM25-top100 union dense-top100 pool the hybrid fuses. Features per
+    (query, doc): bm25_score, bm25_rank, dense_score, dense_rank, rrf_score.
+    A doc missing from one method's list gets NaN for that method — LightGBM
+    branches on NaN, so "not retrieved by X" is itself a learned signal.
+    Deliberately NOT used as features: is_accepted / answer_score. Those are
+    what the relevance labels were built from, so feeding them in would let
+    the model predict the label from its own source — useless at real query
+    time, where you don't yet know which answer gets accepted.
+
+    Feature ablation (val): rrf_score alone -> 0.8238, all five -> 0.8331.
+    So the raw BM25/dense signals add 0.0093 beyond RRF. Worth noting because
+    "gain" feature importance makes rrf_score look like ~97% of the model —
+    importance counts how often a feature is split on, not how much the final
+    score depends on it. The ablation is the honest measure; they disagree.
+
+    Hyperparameters: random search over learning_rate / num_leaves /
+    min_data_in_leaf, 12 configs, scored on val (tune_ltr.py). The model is
+    nearly insensitive to them — 10 of 12 configs landed in 0.8377-0.8393 on
+    LightGBM's own metric, a spread of ~0.0016. Picked lr=0.2, num_leaves=15,
+    min_data_in_leaf=100: tied for best but reached it in 92 rounds vs 349 for
+    the other tie. Simpler trees (few leaves, high min-leaf) fit the data's
+    heavy label imbalance (~0.9% positive) a touch better.
+
+    Also checked XGBoost (rank:ndcg) on the same features/splits: 0.8385 val,
+    a 0.0001 difference from LightGBM. The library choice doesn't matter here
+    — kept LightGBM for the simpler ranking API, not because it won.
+
+        val    0.8331 / 0.8616 / 0.9871
+        test   0.8370 / 0.8649 / 0.9863
+
+    Best phase yet. Over hybrid: +2.6% NDCG@10 on test, and a clear MRR jump
+    (first useful answer lands higher). Recall@100 is flat — a reranker only
+    reorders the fixed pool, so recall is set by retrieval, not this phase.
+
+    METRIC CAVEAT (important — the numbers above are NOT LightGBM's printout).
+    LightGBM's training log reports val ndcg@10 ~0.8393, higher than the 0.8331
+    here. The difference is a convention: LightGBM scores a query whose candidate
+    pool has NO relevant doc (89 of 15,923 val queries, 0.56%) as NDCG=1.0
+    ("nothing to find, so any order is perfect"). Our evaluate.py score() —
+    used identically for BM25/dense/hybrid — counts those as 0.0 (you failed to
+    surface a relevant answer). The offset is exactly 89/15923 = 0.00559, a
+    constant added to every model's LightGBM score, so it cancels in config-vs-
+    config comparison (the tuning ranking is valid) but must be removed before
+    comparing against the rest of this table. 0.8331/0.8370 are the comparable,
+    honest figures; 0.8393 is not.
+
+
 NEXT
-    Phase 6   learning-to-rank (LambdaMART) — go after what's left of the
-              oracle gap with a model that combines both methods' signals
-              instead of a fixed formula.
+    Phase 7   RAG — feed the top reranked answers to a local LLM, generate a
+              synthesized answer, and measure grounding (is the output actually
+              supported by the retrieved answers, or hallucinated).

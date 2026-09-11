@@ -1,7 +1,7 @@
 """Evaluate a retriever against the qrels: NDCG@10, MRR@10, Recall@100.
 
-    python scripts/evaluate.py [bm25|dense|hybrid] <variant> <split> [k]
-      method  = bm25 (default) | dense | hybrid
+    python scripts/evaluate.py [bm25|dense|hybrid|ltr] <variant> <split> [k]
+      method  = bm25 (default) | dense | hybrid | ltr
       variant = a | b       (which index)
       split   = val | test
       k       = RRF constant for hybrid only (default 60)
@@ -9,6 +9,9 @@
     python scripts/evaluate.py hybrid <variant> <split> --sweep[=k1,k2,...]
       Runs BM25 + dense retrieval once, then fuses with each k in the list
       (default 10,20,40,60,100,200) and prints a comparison table.
+
+    ltr requires data/processed/ltr_<split>_<variant>.parquet (build_ltr_features.py)
+    and data/index/ltr_<variant>/model.txt (train_ltr.py) to already exist.
 
 Compare on val, then report the winner on test.
 """
@@ -21,9 +24,12 @@ from pathlib import Path
 
 import duckdb
 import numpy as np
+import pandas as pd
 
 PROCESSED = Path("data/processed")
 INDEX_ROOT = Path("data/index")
+
+LTR_FEATURES = ["bm25_score", "bm25_rank", "dense_score", "dense_rank", "rrf_score"]
 
 NDCG_K = 10
 MRR_K = 10
@@ -60,8 +66,8 @@ def retrieve_bm25(variant: str, texts: list[str]):
     retriever = bm25s.BM25.load(str(index_dir), load_corpus=False)
     doc_ids = np.load(index_dir / "doc_ids.npy")
     q_tokens = [tokenize(t) or ["\0"] for t in texts]   # placeholder for empty
-    results, _ = retriever.retrieve(q_tokens, k=RETRIEVE_K)
-    return results, doc_ids
+    results, scores = retriever.retrieve(q_tokens, k=RETRIEVE_K)
+    return results, scores, doc_ids
 
 
 def retrieve_dense(variant: str, texts: list[str]):
@@ -75,8 +81,38 @@ def retrieve_dense(variant: str, texts: list[str]):
     doc_ids = np.load(index_dir / "doc_ids.npy")
     model = load_model("cuda")
     qvecs = encode_queries(model, texts)
-    _, results = index.search(qvecs, RETRIEVE_K)        # (nq, K) row indices
-    return results, doc_ids
+    scores, results = index.search(qvecs, RETRIEVE_K)   # (nq, K) cosine scores, row indices
+    return results, scores, doc_ids
+
+
+def retrieve_ltr(variant: str, split: str):
+    """Score the precomputed LTR candidate pool with the trained model.
+
+    Unlike bm25/dense/hybrid, this doesn't retrieve anything itself - it
+    loads the (query, doc) feature rows build_ltr_features.py already built,
+    runs the trained LightGBM model over them, and ranks each query's
+    candidates by predicted score. Returns its own (qids, doc_id_lists),
+    since the feature file already carries a fixed candidate pool per query.
+    """
+    import lightgbm as lgb
+
+    feat_path = PROCESSED / f"ltr_{split}_{variant}.parquet"
+    if not feat_path.exists():
+        raise SystemExit(f"no features at {feat_path} - run: python scripts/build_ltr_features.py {variant} {split}")
+    model_path = INDEX_ROOT / f"ltr_{variant}" / "model.txt"
+    if not model_path.exists():
+        raise SystemExit(f"no model at {model_path} - run: python scripts/train_ltr.py {variant}")
+
+    df = pd.read_parquet(feat_path)
+    booster = lgb.Booster(model_file=str(model_path))
+    df["pred"] = booster.predict(df[LTR_FEATURES])
+    df = df.sort_values(["query_id", "pred"], ascending=[True, False])
+
+    qids, doc_id_lists = [], []
+    for qid, g in df.groupby("query_id", sort=False):
+        qids.append(qid)
+        doc_id_lists.append(g["doc_id"].tolist()[:RETRIEVE_K])
+    return qids, doc_id_lists
 
 
 def dcg(grades) -> float:
@@ -136,36 +172,41 @@ def score(qids, doc_id_lists, qrels):
 def evaluate(method: str, variant: str, split: str, k_rrf: int = 60, sweep=None) -> None:
     con = duckdb.connect()
     qrels = load_qrels(con)
-    qids, texts = load_split(con, split)
-    print(f"{method}, variant {variant}, split {split}: {len(qids):,} queries")
 
-    print("retrieving ...")
-    if method == "bm25":
-        idx_results, doc_ids_arr = retrieve_bm25(variant, texts)
-        doc_id_lists = to_doc_ids(idx_results, doc_ids_arr)
-    elif method == "dense":
-        idx_results, doc_ids_arr = retrieve_dense(variant, texts)
-        doc_id_lists = to_doc_ids(idx_results, doc_ids_arr)
-    elif method == "hybrid":
-        bm25_idx, bm25_docids_arr = retrieve_bm25(variant, texts)
-        dense_idx, dense_docids_arr = retrieve_dense(variant, texts)
-        bm25_lists = to_doc_ids(bm25_idx, bm25_docids_arr)
-        dense_lists = to_doc_ids(dense_idx, dense_docids_arr)
-
-        if sweep:
-            print("\n" + "=" * 52)
-            print(f"HYBRID (RRF) sweep  variant={variant}  split={split}")
-            print("=" * 52)
-            print(f"  {'k':>6}  {'NDCG@10':>8}  {'MRR@10':>8}  {'Recall@100':>10}")
-            for kv in sweep:
-                fused = fuse_rrf(bm25_lists, dense_lists, kv)
-                ndcg, mrr, recall, n = score(qids, fused, qrels)
-                print(f"  {kv:>6}  {ndcg:>8.4f}  {mrr:>8.4f}  {recall:>10.4f}")
-            print(f"\n  ({n:,} queries scored)")
-            return
-        doc_id_lists = fuse_rrf(bm25_lists, dense_lists, k_rrf)
+    if method == "ltr":
+        print(f"ltr, variant {variant}, split {split}")
+        print("scoring precomputed candidates ...")
+        qids, doc_id_lists = retrieve_ltr(variant, split)
     else:
-        raise SystemExit(f"unknown method: {method}")
+        qids, texts = load_split(con, split)
+        print(f"{method}, variant {variant}, split {split}: {len(qids):,} queries")
+        print("retrieving ...")
+        if method == "bm25":
+            idx_results, _, doc_ids_arr = retrieve_bm25(variant, texts)
+            doc_id_lists = to_doc_ids(idx_results, doc_ids_arr)
+        elif method == "dense":
+            idx_results, _, doc_ids_arr = retrieve_dense(variant, texts)
+            doc_id_lists = to_doc_ids(idx_results, doc_ids_arr)
+        elif method == "hybrid":
+            bm25_idx, _, bm25_docids_arr = retrieve_bm25(variant, texts)
+            dense_idx, _, dense_docids_arr = retrieve_dense(variant, texts)
+            bm25_lists = to_doc_ids(bm25_idx, bm25_docids_arr)
+            dense_lists = to_doc_ids(dense_idx, dense_docids_arr)
+
+            if sweep:
+                print("\n" + "=" * 52)
+                print(f"HYBRID (RRF) sweep  variant={variant}  split={split}")
+                print("=" * 52)
+                print(f"  {'k':>6}  {'NDCG@10':>8}  {'MRR@10':>8}  {'Recall@100':>10}")
+                for kv in sweep:
+                    fused = fuse_rrf(bm25_lists, dense_lists, kv)
+                    ndcg, mrr, recall, n = score(qids, fused, qrels)
+                    print(f"  {kv:>6}  {ndcg:>8.4f}  {mrr:>8.4f}  {recall:>10.4f}")
+                print(f"\n  ({n:,} queries scored)")
+                return
+            doc_id_lists = fuse_rrf(bm25_lists, dense_lists, k_rrf)
+        else:
+            raise SystemExit(f"unknown method: {method}")
 
     ndcg, mrr, recall, n = score(qids, doc_id_lists, qrels)
     header = f"{method.upper()}  variant={variant}  split={split}"
@@ -183,7 +224,7 @@ def evaluate(method: str, variant: str, split: str, k_rrf: int = 60, sweep=None)
 def main() -> None:
     args = sys.argv[1:]
     method = "bm25"
-    if args and args[0] in ("bm25", "dense", "hybrid"):
+    if args and args[0] in ("bm25", "dense", "hybrid", "ltr"):
         method = args.pop(0)
 
     sweep = None
