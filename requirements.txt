@@ -10,3 +10,6 @@ sentence-transformers
 
 # Phase 6
 lightgbm          # LambdaMART reranker
+
+# Phase 7 / desktop app
+requests          # Ollama HTTP API

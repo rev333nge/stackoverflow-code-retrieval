@@ -42,9 +42,18 @@ PROCESSED = Path("data/processed")
 INDEX_ROOT = Path("data/index")
 
 MODEL = "gemma4-e4b-unsloth-q4kxl"
-OLLAMA_URL = "http://localhost:11434/api/generate"
+OLLAMA_BASE = "http://localhost:11434"
+OLLAMA_URL = f"{OLLAMA_BASE}/api/generate"
 K = 4
 GATE_COSINE = 0.70
+
+
+def list_models() -> list[str]:
+    """Names of models Ollama currently has pulled and ready to run."""
+    resp = requests.get(f"{OLLAMA_BASE}/api/tags", timeout=5)
+    resp.raise_for_status()
+    return [m["name"] for m in resp.json().get("models", [])]
+
 
 ROUTER_PROMPT = """You are a pandas/numpy assistant deciding whether to search StackOverflow before answering.
 
@@ -70,7 +79,8 @@ Answer:"""
 
 
 class AdaptiveRAG:
-    def __init__(self, variant: str = "a", device: str = "cuda") -> None:
+    def __init__(self, variant: str = "a", device: str = "cuda", model: str = MODEL) -> None:
+        self.model = model
         bm25_dir = INDEX_ROOT / f"bm25_{variant}"
         dense_dir = INDEX_ROOT / f"dense_{variant}"
         model_path = INDEX_ROOT / f"ltr_{variant}" / "model.txt"
@@ -96,11 +106,14 @@ class AdaptiveRAG:
             opts["temperature"] = temperature
         resp = requests.post(
             OLLAMA_URL,
-            json={"model": MODEL, "prompt": prompt, "stream": False, "options": opts},
+            json={"model": self.model, "prompt": prompt, "stream": False, "options": opts},
             timeout=300,
         )
         resp.raise_for_status()
         return resp.json()["response"].strip()
+
+    def set_model(self, model: str) -> None:
+        self.model = model
 
     def route(self, query: str) -> str:
         """Return 'SEARCH' or 'ANSWER' (defaults to ANSWER if unclear)."""
