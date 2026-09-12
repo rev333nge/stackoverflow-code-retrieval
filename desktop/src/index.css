@@ -1,0 +1,34 @@
+:root {
+  --bg: #1e1f26;
+  --bg-sidebar: #17181d;
+  --bg-bubble-user: #3b3d4d;
+  --bg-bubble-assistant: #2a2b34;
+  --text: #e6e6ea;
+  --text-dim: #9a9ba5;
+  --border: #2e303a;
+  --accent: #7c8cff;
+  --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
+  --mono: ui-monospace, Consolas, monospace;
+
+  font: 14px/1.5 var(--sans);
+  color: var(--text);
+  background: var(--bg);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+}
+
+textarea, select {
+  font: inherit;
+}
