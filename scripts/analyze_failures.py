@@ -50,9 +50,9 @@ def main() -> None:
     print(f"variant {variant}, split {split}: {len(qids):,} queries")
 
     print("retrieving BM25 ...")
-    bm_res, bm_ids = retrieve_bm25(variant, texts)
+    bm_res, _, bm_ids = retrieve_bm25(variant, texts)
     print("retrieving dense ...")
-    de_res, de_ids = retrieve_dense(variant, texts)
+    de_res, _, de_ids = retrieve_dense(variant, texts)
 
     # per-query NDCG for both, keeping only queries we have judgments for
     rows = []  # (qi, qid, bm, de)

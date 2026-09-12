@@ -66,3 +66,13 @@ DENSE RETRIEVAL (Phase 3)
     index      FAISS IndexFlatIP over L2-normalized vectors (= cosine, exact)
                HNSW/IVF is a drop-in swap when scaling to millions of docs
     truncation answers over ~512 tokens are cut (chunking deferred to Phase 7)
+
+RAG
+
+query
+ └─ router (gemma: ANSWER | SEARCH)        ← reads SO only when it decides it needs to
+     ├─ ANSWER → answer from model knowledge
+     └─ SEARCH → retrieve top-4
+         └─ confidence gate (top cosine ≥ 0.70?)
+             ├─ OPEN  → answer grounded in docs
+             └─ CLOSED → drop junk, answer from model knowledge
