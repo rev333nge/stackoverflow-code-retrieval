@@ -28,7 +28,7 @@ function TraceBadge({ message }) {
 export default function Message({ message }) {
   return (
     <div className={`message message-${message.role}`}>
-      <div className="message-bubble">
+      <div className={message.isError ? 'message-bubble message-error' : 'message-bubble'}>
         <ReactMarkdown>{message.content}</ReactMarkdown>
       </div>
       <TraceBadge message={message} />

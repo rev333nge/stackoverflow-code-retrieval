@@ -42,5 +42,5 @@ class RagService:
     def current_model(self) -> str:
         return self.rag.model
 
-    def answer(self, query: str) -> dict:
-        return self.rag.answer(query)
+    def answer(self, query: str, history: list[tuple[str, str]] | None = None) -> dict:
+        return self.rag.answer(query, history)

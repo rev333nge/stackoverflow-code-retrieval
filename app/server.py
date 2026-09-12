@@ -112,10 +112,15 @@ def post_message(conversation_id: int, body: NewMessage):
     if conv is None:
         raise HTTPException(404, "conversation not found")
 
+    # last few turns only, for conversational continuity, not full replay
+    history = [(m["role"], m["content"]) for m in db.list_messages(con, conversation_id)[-6:]]
     db.add_message(con, conversation_id, "user", body.content)
 
     service.set_model(conv["model"])
-    result = service.answer(body.content)
+    try:
+        result = service.answer(body.content, history)
+    except RuntimeError as e:
+        raise HTTPException(502, str(e))
     sources = result["retrieved"] if result["used_docs"] else None
 
     msg_id = db.add_message(

@@ -89,6 +89,11 @@ export default function App() {
           prev.map((c) => (c.id === activeConversation.id ? { ...c, title } : c)),
         )
       }
+    } catch (err) {
+      setMessages((prev) => [
+        ...prev,
+        { id: `error-${Date.now()}`, role: 'assistant', content: `Something went wrong: ${err.message}`, isError: true },
+      ])
     } finally {
       setSending(false)
     }

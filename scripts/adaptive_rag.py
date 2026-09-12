@@ -55,27 +55,45 @@ def list_models() -> list[str]:
     return [m["name"] for m in resp.json().get("models", [])]
 
 
-ROUTER_PROMPT = """You are a pandas/numpy assistant deciding whether to search StackOverflow before answering.
+ROUTER_PROMPT = """You are a helpful assistant with a pandas/numpy StackOverflow search tool available.
+Decide whether to use it before replying to the user's latest message.
 
 Searching is cheap; a wrong or oversimplified answer is costly. So WHEN IN DOUBT, SEARCH.
-Only choose ANSWER if the question is simple and common and you are certain your unaided answer is correct and complete.
-Choose SEARCH for anything tricky, niche, performance-sensitive, easy to get subtly wrong, or where a specific idiom/technique matters.
+Only choose ANSWER if the message is simple (including plain conversation, like a greeting)
+and, when it is a technical question, you are certain your unaided answer is correct and complete.
+Choose SEARCH for anything pandas/numpy related that is tricky, niche, performance-sensitive,
+easy to get subtly wrong, or where a specific idiom/technique matters.
 
 Reply with ONLY one word: ANSWER or SEARCH.
-
-Question: {q}
+{history}
+Message: {q}
 
 One-word decision:"""
 
-ANSWER_ALONE_PROMPT = "Answer this pandas/numpy programming question clearly and concisely, with a short code example.\n\nQuestion: {q}"
+ANSWER_ALONE_PROMPT = """You are a helpful assistant, especially knowledgeable about pandas/numpy.
+Reply to the user's latest message directly and naturally. If it is a pandas/numpy programming
+question, explain clearly and include a short code example. If it is not a programming question
+(a greeting, a follow-up, small talk), just respond to it normally -- do not ask for a question.
+{history}
+Message: {q}
+
+Reply:"""
 
 ANSWER_WITH_DOCS_PROMPT = """You are answering a pandas/numpy question. Use the reference answers below as your source. Give ONE clear, focused answer - lead with the best approach and a short code example. Do not list every reference separately.
-
+{history}
 Question: {q}
 
 {context}
 
 Answer:"""
+
+
+def _format_history(history: list[tuple[str, str]] | None) -> str:
+    """Render recent turns as a transcript block, or "" if there is none."""
+    if not history:
+        return ""
+    lines = [f"{'User' if role == 'user' else 'Assistant'}: {content}" for role, content in history]
+    return "Conversation so far:\n" + "\n".join(lines) + "\n"
 
 
 class AdaptiveRAG:
@@ -104,20 +122,24 @@ class AdaptiveRAG:
         opts = {"num_ctx": num_ctx}
         if temperature is not None:
             opts["temperature"] = temperature
-        resp = requests.post(
-            OLLAMA_URL,
-            json={"model": self.model, "prompt": prompt, "stream": False, "options": opts},
-            timeout=300,
-        )
-        resp.raise_for_status()
+        try:
+            resp = requests.post(
+                OLLAMA_URL,
+                json={"model": self.model, "prompt": prompt, "stream": False, "options": opts},
+                timeout=300,
+            )
+            resp.raise_for_status()
+        except requests.exceptions.RequestException as e:
+            raise RuntimeError(f"could not reach Ollama at {OLLAMA_URL} (is `ollama serve` running?): {e}") from e
         return resp.json()["response"].strip()
 
     def set_model(self, model: str) -> None:
         self.model = model
 
-    def route(self, query: str) -> str:
+    def route(self, query: str, history: list[tuple[str, str]] | None = None) -> str:
         """Return 'SEARCH' or 'ANSWER' (defaults to ANSWER if unclear)."""
-        raw = self._generate(ROUTER_PROMPT.format(q=query), num_ctx=4096, temperature=0).upper()
+        prompt = ROUTER_PROMPT.format(history=_format_history(history), q=query)
+        raw = self._generate(prompt, num_ctx=4096, temperature=0).upper()
         return "SEARCH" if "SEARCH" in raw else "ANSWER"
 
     # ---- retrieval (BM25 + dense -> LTR rerank) ----
@@ -170,11 +192,19 @@ class AdaptiveRAG:
         return top_cosine, docs
 
     # ---- the full adaptive flow ----
-    def answer(self, query: str) -> dict:
-        """Run router -> (retrieve -> gate) -> generate. Returns answer + trace."""
-        route = self.route(query)
+    def answer(self, query: str, history: list[tuple[str, str]] | None = None) -> dict:
+        """Run router -> (retrieve -> gate) -> generate. Returns answer + trace.
+
+        history is the recent conversation as [(role, content), ...] ("user"/
+        "assistant"), oldest first -- used only to keep replies coherent
+        across turns. Retrieval itself still searches on the bare query text
+        (no query rewriting yet), so a context-dependent follow-up like
+        "give me another example" will retrieve poorly; known limitation.
+        """
+        hist = _format_history(history)
+        route = self.route(query, history)
         if route == "ANSWER":
-            text = self._generate(ANSWER_ALONE_PROMPT.format(q=query))
+            text = self._generate(ANSWER_ALONE_PROMPT.format(history=hist, q=query))
             return {"route": "ANSWER", "searched": False, "top_cosine": None,
                     "gate": None, "used_docs": False, "retrieved": [], "answer": text}
 
@@ -183,11 +213,11 @@ class AdaptiveRAG:
         retrieved = [t for _, t, _ in docs]
         if gate_open:
             context = "\n\n".join(f"[{i}] {t}\n{b}" for i, (_, t, b) in enumerate(docs, 1))
-            text = self._generate(ANSWER_WITH_DOCS_PROMPT.format(q=query, context=context))
+            text = self._generate(ANSWER_WITH_DOCS_PROMPT.format(history=hist, q=query, context=context))
             return {"route": "SEARCH", "searched": True, "top_cosine": top_cosine,
                     "gate": "open", "used_docs": True, "retrieved": retrieved, "answer": text}
         # gate closed: retrieval too weak -> answer from model knowledge instead of junk
-        text = self._generate(ANSWER_ALONE_PROMPT.format(q=query))
+        text = self._generate(ANSWER_ALONE_PROMPT.format(history=hist, q=query))
         return {"route": "SEARCH", "searched": True, "top_cosine": top_cosine,
                 "gate": "closed", "used_docs": False, "retrieved": retrieved, "answer": text}
 
