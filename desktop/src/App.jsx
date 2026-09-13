@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import Sidebar from './components/Sidebar'
 import ChatWindow from './components/ChatWindow'
 import { api } from './api'
@@ -13,6 +13,13 @@ export default function App() {
   const [activeId, setActiveId] = useState(null)
   const [messages, setMessages] = useState([])
   const [sending, setSending] = useState(false)
+  const [error, setError] = useState(null)
+
+  // Always holds the *current* activeId, unlike a value closed over inside
+  // handleSend -- lets an in-flight send detect that the user has since
+  // switched to a different conversation before it appends its reply.
+  const activeIdRef = useRef(activeId)
+  useEffect(() => { activeIdRef.current = activeId }, [activeId])
 
   // Wait for the FastAPI backend (Electron starts it, but model/index
   // loading onto the GPU takes a while) before hitting any endpoint.
@@ -54,7 +61,10 @@ export default function App() {
 
   async function handleNew() {
     const model = activeConversation?.model ?? models[0]
-    if (!model) return
+    if (!model) {
+      setError('No local models found. Make sure Ollama is running and has at least one model pulled.')
+      return
+    }
     const conv = await api.createConversation(DEFAULT_TITLE, model)
     setConversations((prev) => [conv, ...prev])
     setActiveId(conv.id)
@@ -76,24 +86,31 @@ export default function App() {
 
   async function handleSend(text) {
     if (!activeConversation) return
+    const convId = activeConversation.id
     const isFirstMessage = messages.length === 0
     setMessages((prev) => [...prev, { id: `local-${Date.now()}`, role: 'user', content: text }])
     setSending(true)
     try {
-      const reply = await api.sendMessage(activeConversation.id, text)
-      setMessages((prev) => [...prev, reply])
+      const reply = await api.sendMessage(convId, text)
+      // The user may have switched to a different conversation while this
+      // was in flight -- only splice the reply into the view it belongs to.
+      if (activeIdRef.current === convId) {
+        setMessages((prev) => [...prev, reply])
+      }
       if (isFirstMessage) {
         const title = text.length > 40 ? `${text.slice(0, 40)}...` : text
-        await api.updateConversation(activeConversation.id, { title })
+        await api.updateConversation(convId, { title })
         setConversations((prev) =>
-          prev.map((c) => (c.id === activeConversation.id ? { ...c, title } : c)),
+          prev.map((c) => (c.id === convId ? { ...c, title } : c)),
         )
       }
     } catch (err) {
-      setMessages((prev) => [
-        ...prev,
-        { id: `error-${Date.now()}`, role: 'assistant', content: `Something went wrong: ${err.message}`, isError: true },
-      ])
+      if (activeIdRef.current === convId) {
+        setMessages((prev) => [
+          ...prev,
+          { id: `error-${Date.now()}`, role: 'assistant', content: `Something went wrong: ${err.message}`, isError: true },
+        ])
+      }
     } finally {
       setSending(false)
     }
@@ -105,6 +122,12 @@ export default function App() {
 
   return (
     <div className="app">
+      {error && (
+        <div className="error-banner">
+          {error}
+          <button onClick={() => setError(null)}>&times;</button>
+        </div>
+      )}
       <Sidebar
         conversations={conversations}
         activeId={activeId}
