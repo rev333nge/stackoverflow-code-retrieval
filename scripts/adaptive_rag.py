@@ -89,11 +89,17 @@ Answer:"""
 
 
 def _format_history(history: list[tuple[str, str]] | None) -> str:
-    """Render recent turns as a transcript block, or "" if there is none."""
+    """Render recent turns as a transcript block, or "" if there is none.
+
+    Wrapped in explicit start/end markers (rather than bare "User:"/"Message:"
+    labels) so a pasted code snippet or error log in the user's own message
+    that happens to contain those words is less likely to be misread as a
+    turn boundary.
+    """
     if not history:
         return ""
     lines = [f"{'User' if role == 'user' else 'Assistant'}: {content}" for role, content in history]
-    return "Conversation so far:\n" + "\n".join(lines) + "\n"
+    return "--- Conversation so far (for context only) ---\n" + "\n".join(lines) + "\n--- End of conversation so far ---\n"
 
 
 class AdaptiveRAG:
@@ -118,28 +124,32 @@ class AdaptiveRAG:
         self.corpus = (PROCESSED / "corpus.parquet").as_posix()
 
     # ---- LLM calls (all gemma, local) ----
-    def _generate(self, prompt: str, num_ctx: int = 8192, temperature: float | None = None) -> str:
+    def _generate(self, prompt: str, num_ctx: int = 8192, temperature: float | None = None,
+                  model: str | None = None) -> str:
         opts = {"num_ctx": num_ctx}
         if temperature is not None:
             opts["temperature"] = temperature
         try:
             resp = requests.post(
                 OLLAMA_URL,
-                json={"model": self.model, "prompt": prompt, "stream": False, "options": opts},
+                json={"model": model or self.model, "prompt": prompt, "stream": False, "options": opts},
                 timeout=300,
             )
             resp.raise_for_status()
+            return resp.json()["response"].strip()
         except requests.exceptions.RequestException as e:
             raise RuntimeError(f"could not reach Ollama at {OLLAMA_URL} (is `ollama serve` running?): {e}") from e
-        return resp.json()["response"].strip()
+        except (ValueError, KeyError) as e:
+            raise RuntimeError(f"Ollama returned an unexpected response (model may still be loading): {e}") from e
 
     def set_model(self, model: str) -> None:
         self.model = model
 
-    def route(self, query: str, history: list[tuple[str, str]] | None = None) -> str:
+    def route(self, query: str, history: list[tuple[str, str]] | None = None,
+              model: str | None = None) -> str:
         """Return 'SEARCH' or 'ANSWER' (defaults to ANSWER if unclear)."""
         prompt = ROUTER_PROMPT.format(history=_format_history(history), q=query)
-        raw = self._generate(prompt, num_ctx=4096, temperature=0).upper()
+        raw = self._generate(prompt, num_ctx=4096, temperature=0, model=model).upper()
         return "SEARCH" if "SEARCH" in raw else "ANSWER"
 
     # ---- retrieval (BM25 + dense -> LTR rerank) ----
@@ -192,7 +202,8 @@ class AdaptiveRAG:
         return top_cosine, docs
 
     # ---- the full adaptive flow ----
-    def answer(self, query: str, history: list[tuple[str, str]] | None = None) -> dict:
+    def answer(self, query: str, history: list[tuple[str, str]] | None = None,
+               model: str | None = None) -> dict:
         """Run router -> (retrieve -> gate) -> generate. Returns answer + trace.
 
         history is the recent conversation as [(role, content), ...] ("user"/
@@ -200,11 +211,15 @@ class AdaptiveRAG:
         across turns. Retrieval itself still searches on the bare query text
         (no query rewriting yet), so a context-dependent follow-up like
         "give me another example" will retrieve poorly; known limitation.
+
+        model overrides self.model for this call only (does not mutate shared
+        state) -- lets one AdaptiveRAG instance safely serve concurrent
+        requests for different conversations/models without a race.
         """
         hist = _format_history(history)
-        route = self.route(query, history)
+        route = self.route(query, history, model=model)
         if route == "ANSWER":
-            text = self._generate(ANSWER_ALONE_PROMPT.format(history=hist, q=query))
+            text = self._generate(ANSWER_ALONE_PROMPT.format(history=hist, q=query), model=model)
             return {"route": "ANSWER", "searched": False, "top_cosine": None,
                     "gate": None, "used_docs": False, "retrieved": [], "answer": text}
 
@@ -213,11 +228,11 @@ class AdaptiveRAG:
         retrieved = [t for _, t, _ in docs]
         if gate_open:
             context = "\n\n".join(f"[{i}] {t}\n{b}" for i, (_, t, b) in enumerate(docs, 1))
-            text = self._generate(ANSWER_WITH_DOCS_PROMPT.format(history=hist, q=query, context=context))
+            text = self._generate(ANSWER_WITH_DOCS_PROMPT.format(history=hist, q=query, context=context), model=model)
             return {"route": "SEARCH", "searched": True, "top_cosine": top_cosine,
                     "gate": "open", "used_docs": True, "retrieved": retrieved, "answer": text}
         # gate closed: retrieval too weak -> answer from model knowledge instead of junk
-        text = self._generate(ANSWER_ALONE_PROMPT.format(history=hist, q=query))
+        text = self._generate(ANSWER_ALONE_PROMPT.format(history=hist, q=query), model=model)
         return {"route": "SEARCH", "searched": True, "top_cosine": top_cosine,
                 "gate": "closed", "used_docs": False, "retrieved": retrieved, "answer": text}
 

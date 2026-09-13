@@ -11,21 +11,35 @@ Run standalone for development:
 
 from __future__ import annotations
 
+import sqlite3
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app import db
 from app.rag_service import RagService
 
 service: RagService | None = None
+con: sqlite3.Connection | None = None
+
+# The built desktop UI, once `npm run build` has produced it. Only present
+# after a packaged build -- during development the Vite dev server serves
+# the UI instead (see desktop/electron/main.js), so this stays unmounted.
+FRONTEND_DIST = Path(__file__).resolve().parent.parent / "desktop" / "dist"
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global service
+    global service, con
+    # One connection, reused for the app's lifetime, instead of reconnecting
+    # (and re-running the schema script) on every request. check_same_thread
+    # is off because FastAPI dispatches these sync handlers to a threadpool;
+    # db.py serializes actual access with its own lock, so this is safe.
+    con = db.connect(check_same_thread=False)
     print("loading retrieval indexes + model onto GPU...")
     service = RagService()
     print("ready.")
@@ -71,20 +85,17 @@ def get_models():
 
 @app.get("/api/conversations")
 def get_conversations():
-    con = db.connect()
     return [dict(r) for r in db.list_conversations(con)]
 
 
 @app.post("/api/conversations")
 def create_conversation(body: NewConversation):
-    con = db.connect()
     cid = db.create_conversation(con, body.title, body.model)
     return {"id": cid, "title": body.title, "model": body.model}
 
 
 @app.patch("/api/conversations/{conversation_id}")
 def update_conversation(conversation_id: int, body: ConversationUpdate):
-    con = db.connect()
     if body.title is not None:
         db.rename_conversation(con, conversation_id, body.title)
     if body.model is not None:
@@ -94,32 +105,31 @@ def update_conversation(conversation_id: int, body: ConversationUpdate):
 
 @app.delete("/api/conversations/{conversation_id}")
 def delete_conversation(conversation_id: int):
-    con = db.connect()
     db.delete_conversation(con, conversation_id)
     return {"ok": True}
 
 
 @app.get("/api/conversations/{conversation_id}/messages")
 def get_messages(conversation_id: int):
-    con = db.connect()
     return db.list_messages(con, conversation_id)
 
 
 @app.post("/api/conversations/{conversation_id}/messages")
 def post_message(conversation_id: int, body: NewMessage):
-    con = db.connect()
-    conv = next((c for c in db.list_conversations(con) if c["id"] == conversation_id), None)
+    conv = db.get_conversation(con, conversation_id)
     if conv is None:
         raise HTTPException(404, "conversation not found")
 
     # last few turns only, for conversational continuity, not full replay
-    history = [(m["role"], m["content"]) for m in db.list_messages(con, conversation_id)[-6:]]
+    history = [(m["role"], m["content"]) for m in db.list_recent_messages(con, conversation_id)]
     db.add_message(con, conversation_id, "user", body.content)
 
-    service.set_model(conv["model"])
     try:
-        result = service.answer(body.content, history)
-    except RuntimeError as e:
+        # model is passed per-call (not set on shared state) so concurrent
+        # requests for different conversations can't race on which model
+        # answers which one -- see AdaptiveRAG.answer()'s docstring.
+        result = service.answer(body.content, history, model=conv["model"])
+    except Exception as e:
         raise HTTPException(502, str(e))
     sources = result["retrieved"] if result["used_docs"] else None
 
@@ -138,3 +148,10 @@ def post_message(conversation_id: int, body: NewMessage):
         "used_docs": result["used_docs"],
         "sources": sources,
     }
+
+
+# Registered last: only requests that don't match an /api/* route above fall
+# through to serving the built UI. Absent in development (no desktop/dist
+# yet), so this simply doesn't mount and Vite's dev server handles the UI.
+if FRONTEND_DIST.exists():
+    app.mount("/", StaticFiles(directory=str(FRONTEND_DIST), html=True), name="frontend")
