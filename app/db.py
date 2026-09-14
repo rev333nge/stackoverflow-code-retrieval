@@ -147,6 +147,12 @@ def add_message(
     return cur.lastrowid
 
 
+@_synchronized
+def delete_message(con: sqlite3.Connection, message_id: int) -> None:
+    con.execute("DELETE FROM messages WHERE id = ?", (message_id,))
+    con.commit()
+
+
 def _row_to_message(r: sqlite3.Row) -> dict:
     d = dict(r)
     d["used_docs"] = None if d["used_docs"] is None else bool(d["used_docs"])

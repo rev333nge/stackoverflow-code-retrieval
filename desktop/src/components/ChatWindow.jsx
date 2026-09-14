@@ -13,6 +13,13 @@ export default function ChatWindow({ conversation, messages, models, onChangeMod
     return <div className="chat-window chat-window-empty">Start a new chat to begin.</div>
   }
 
+  // A conversation can be saved with a model that Ollama no longer has pulled.
+  // Keep it in the dropdown (labeled) so the select shows the real current
+  // value instead of rendering blank -- the user can still switch to an
+  // installed one.
+  const modelInstalled = models.includes(conversation.model)
+  const modelOptions = modelInstalled ? models : [conversation.model, ...models]
+
   function handleSubmit(e) {
     e.preventDefault()
     const text = draft.trim()
@@ -30,8 +37,10 @@ export default function ChatWindow({ conversation, messages, models, onChangeMod
           value={conversation.model}
           onChange={(e) => onChangeModel(e.target.value)}
         >
-          {models.map((m) => (
-            <option key={m} value={m}>{m}</option>
+          {modelOptions.map((m) => (
+            <option key={m} value={m}>
+              {models.includes(m) ? m : `${m} (not installed)`}
+            </option>
           ))}
         </select>
       </div>

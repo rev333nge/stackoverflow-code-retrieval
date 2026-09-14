@@ -8,6 +8,8 @@ const DEFAULT_TITLE = 'New chat'
 
 export default function App() {
   const [backendReady, setBackendReady] = useState(false)
+  const [backendFailed, setBackendFailed] = useState(false)
+  const [retryTick, setRetryTick] = useState(0)
   const [models, setModels] = useState([])
   const [conversations, setConversations] = useState([])
   const [activeId, setActiveId] = useState(null)
@@ -22,9 +24,14 @@ export default function App() {
   useEffect(() => { activeIdRef.current = activeId }, [activeId])
 
   // Wait for the FastAPI backend (Electron starts it, but model/index
-  // loading onto the GPU takes a while) before hitting any endpoint.
+  // loading onto the GPU takes a while) before hitting any endpoint. Give up
+  // after a deadline instead of polling forever, so a backend that never comes
+  // up (crash, port still held by a previous run) surfaces an actionable error
+  // rather than a loading screen that hangs indefinitely. `retryTick` re-runs
+  // this effect when the user clicks Retry.
   useEffect(() => {
     let cancelled = false
+    const deadline = Date.now() + 120_000
     async function waitForBackend() {
       while (!cancelled) {
         try {
@@ -36,12 +43,16 @@ export default function App() {
         } catch {
           // not up yet
         }
+        if (Date.now() > deadline) {
+          setBackendFailed(true)
+          return
+        }
         await new Promise((r) => setTimeout(r, 500))
       }
     }
     waitForBackend()
     return () => { cancelled = true }
-  }, [])
+  }, [retryTick])
 
   useEffect(() => {
     if (!backendReady) return
@@ -117,6 +128,14 @@ export default function App() {
   }
 
   if (!backendReady) {
+    if (backendFailed) {
+      return (
+        <div className="loading-screen">
+          <p>Couldn&apos;t reach the backend. Make sure Ollama is running, then try again.</p>
+          <button onClick={() => { setBackendFailed(false); setRetryTick((n) => n + 1) }}>Retry</button>
+        </div>
+      )
+    }
     return <div className="loading-screen">Loading retrieval indexes and model...</div>
   }
 

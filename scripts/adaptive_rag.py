@@ -24,6 +24,7 @@ Notes on the constants:
 from __future__ import annotations
 
 import sys
+import threading
 from pathlib import Path
 
 import bm25s
@@ -122,6 +123,13 @@ class AdaptiveRAG:
         self.booster = lgb.Booster(model_file=str(model_path))
         self.con = duckdb.connect()
         self.corpus = (PROCESSED / "corpus.parquet").as_posix()
+        # This instance is shared across FastAPI's threadpool (see rag_service.py).
+        # The Ollama calls in _generate are plain HTTP and safe to run in parallel,
+        # but retrieve() touches state that is not: the single DuckDB connection,
+        # the torch embedder's forward pass, and the FAISS index. Serialize just
+        # that section so concurrent requests don't corrupt each other -- the slow
+        # part (generation) still overlaps freely.
+        self._retrieve_lock = threading.Lock()
 
     # ---- LLM calls (all gemma, local) ----
     def _generate(self, prompt: str, num_ctx: int = 8192, temperature: float | None = None,
@@ -178,25 +186,26 @@ class AdaptiveRAG:
         top_cosine is the best dense cosine over the whole pool -- the confidence
         signal the gate uses (how close is the nearest doc to the query, at all).
         """
-        tokens = tokenize(query) or ["\0"]
-        bm_idx, bm_scores = self.bm25.retrieve([tokens], k=RETRIEVE_K)
-        bm_ids = [int(self.bm25_ids[r]) for r in bm_idx[0]]
+        with self._retrieve_lock:
+            tokens = tokenize(query) or ["\0"]
+            bm_idx, bm_scores = self.bm25.retrieve([tokens], k=RETRIEVE_K)
+            bm_ids = [int(self.bm25_ids[r]) for r in bm_idx[0]]
 
-        qvec = encode_queries(self.embedder, [query])
-        dense_scores, dense_idx = self.dense.search(qvec, RETRIEVE_K)
-        dense_ids = [int(self.dense_ids[r]) for r in dense_idx[0]]
-        top_cosine = float(dense_scores[0][0])  # best dense cosine available
+            qvec = encode_queries(self.embedder, [query])
+            dense_scores, dense_idx = self.dense.search(qvec, RETRIEVE_K)
+            dense_ids = [int(self.dense_ids[r]) for r in dense_idx[0]]
+            top_cosine = float(dense_scores[0][0])  # best dense cosine available
 
-        doc_ids, feats = self._build_features(
-            self._rank_lookup(bm_ids, bm_scores[0]),
-            self._rank_lookup(dense_ids, dense_scores[0]),
-        )
-        order = np.argsort(-self.booster.predict(feats))[:K]
-        top = [doc_ids[i] for i in order]
-        rows = self.con.execute(
-            f"SELECT doc_id, title, answer_body FROM read_parquet('{self.corpus}') "
-            f"WHERE doc_id IN ({','.join(map(str, top))})"
-        ).fetchall()
+            doc_ids, feats = self._build_features(
+                self._rank_lookup(bm_ids, bm_scores[0]),
+                self._rank_lookup(dense_ids, dense_scores[0]),
+            )
+            order = np.argsort(-self.booster.predict(feats))[:K]
+            top = [doc_ids[i] for i in order]
+            rows = self.con.execute(
+                f"SELECT doc_id, title, answer_body FROM read_parquet('{self.corpus}') "
+                f"WHERE doc_id IN ({','.join(map(str, top))})"
+            ).fetchall()
         by_id = {r[0]: (r[1], r[2]) for r in rows}
         docs = [(d, by_id[d][0], by_id[d][1]) for d in top if d in by_id]
         return top_cosine, docs

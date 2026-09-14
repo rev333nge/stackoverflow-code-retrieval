@@ -3,7 +3,7 @@
 // process bound to 127.0.0.1 -- nothing here is reachable from the network.
 
 import { app, BrowserWindow } from 'electron'
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -30,7 +30,31 @@ function startBackend() {
   })
   backendProcess.on('exit', (code) => {
     console.log(`backend exited with code ${code}`)
+    backendProcess = null
   })
+}
+
+function stopBackend() {
+  const proc = backendProcess
+  if (!proc || proc.exitCode !== null || proc.signalCode !== null) return
+  backendProcess = null
+  // We spawn uvicorn *through* cmd.exe, so proc.pid is the cmd.exe wrapper --
+  // proc.kill() would terminate only that shell and orphan the python/uvicorn
+  // grandchild, leaving port 8756 bound and breaking the next launch. Kill the
+  // whole process tree by PID instead. Run synchronously so the tree is gone
+  // before the app finishes quitting.
+  if (process.platform === 'win32') {
+    const res = spawnSync('taskkill', ['/pid', String(proc.pid), '/T', '/F'])
+    if (res.error) {
+      console.error('taskkill failed, falling back to kill():', res.error)
+      proc.kill()
+    }
+  } else {
+    // On POSIX, negate the PID to signal the whole process group. That requires
+    // the child to be its own group leader (detached), which the win32-only
+    // spawn above is not -- so fall back to a plain kill here.
+    proc.kill('SIGTERM')
+  }
 }
 
 async function waitForBackend(timeoutMs = 120_000) {
@@ -83,5 +107,5 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
-  if (backendProcess) backendProcess.kill()
+  stopBackend()
 })

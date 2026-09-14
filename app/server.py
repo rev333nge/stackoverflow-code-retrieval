@@ -122,7 +122,7 @@ def post_message(conversation_id: int, body: NewMessage):
 
     # last few turns only, for conversational continuity, not full replay
     history = [(m["role"], m["content"]) for m in db.list_recent_messages(con, conversation_id)]
-    db.add_message(con, conversation_id, "user", body.content)
+    user_msg_id = db.add_message(con, conversation_id, "user", body.content)
 
     try:
         # model is passed per-call (not set on shared state) so concurrent
@@ -130,6 +130,11 @@ def post_message(conversation_id: int, body: NewMessage):
         # answers which one -- see AdaptiveRAG.answer()'s docstring.
         result = service.answer(body.content, history, model=conv["model"])
     except Exception as e:
+        # Generation failed, so there's no reply to pair with the message we
+        # just stored. Roll it back instead of leaving a dangling half-turn
+        # (a user question with no answer) in the persisted history -- the UI
+        # surfaces the error separately for the current session.
+        db.delete_message(con, user_msg_id)
         raise HTTPException(502, str(e))
     sources = result["retrieved"] if result["used_docs"] else None
 
