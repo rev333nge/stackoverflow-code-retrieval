@@ -125,7 +125,7 @@ def add_message(
     top_cosine: float | None = None,
     gate: str | None = None,
     used_docs: bool | None = None,
-    sources: list[str] | None = None,
+    sources: list[dict] | None = None,
 ) -> int:
     cur = con.execute(
         """INSERT INTO messages

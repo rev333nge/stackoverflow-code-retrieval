@@ -91,7 +91,10 @@ def get_conversations():
 @app.post("/api/conversations")
 def create_conversation(body: NewConversation):
     cid = db.create_conversation(con, body.title, body.model)
-    return {"id": cid, "title": body.title, "model": body.model}
+    # Read the row back (rather than hand-assembling the response) so the
+    # client gets created_at too -- needed to group it under "today" in the
+    # sidebar instead of falling through to "earlier".
+    return dict(db.get_conversation(con, cid))
 
 
 @app.patch("/api/conversations/{conversation_id}")

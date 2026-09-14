@@ -234,7 +234,10 @@ class AdaptiveRAG:
 
         top_cosine, docs = self.retrieve(query)
         gate_open = top_cosine >= GATE_COSINE
-        retrieved = [t for _, t, _ in docs]
+        # doc_id is the real Stack Exchange answer Post.Id (corpus is built
+        # straight off the official data dump -- see build_corpus.py), so
+        # stackoverflow.com/a/{id} is a live, working short link to it.
+        retrieved = [{"title": t, "url": f"https://stackoverflow.com/a/{d}"} for d, t, _ in docs]
         if gate_open:
             context = "\n\n".join(f"[{i}] {t}\n{b}" for i, (_, t, b) in enumerate(docs, 1))
             text = self._generate(ANSWER_WITH_DOCS_PROMPT.format(history=hist, q=query, context=context), model=model)
@@ -266,8 +269,8 @@ def main() -> None:
         trace += "]"
         print(trace)
         if r["retrieved"] and r["used_docs"]:
-            for i, t in enumerate(r["retrieved"], 1):
-                print(f"  [{i}] {t[:70]}")
+            for i, s in enumerate(r["retrieved"], 1):
+                print(f"  [{i}] {s['title'][:70]}  {s['url']}")
         print("\n" + r["answer"] + "\n")
 
 

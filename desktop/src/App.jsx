@@ -16,6 +16,12 @@ export default function App() {
   const [messages, setMessages] = useState([])
   const [sending, setSending] = useState(false)
   const [error, setError] = useState(null)
+  const [isDark, setIsDark] = useState(() => localStorage.getItem('theme') === 'dark')
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = isDark ? 'dark' : 'light'
+    localStorage.setItem('theme', isDark ? 'dark' : 'light')
+  }, [isDark])
 
   // Always holds the *current* activeId, unlike a value closed over inside
   // handleSend -- lets an in-flight send detect that the user has since
@@ -60,9 +66,18 @@ export default function App() {
     api.getConversations().then(setConversations)
   }, [backendReady])
 
+  // When handleSend lazily creates a conversation and switches to it in the
+  // same call, we already know it's empty and set that locally -- suppress
+  // the fetch this effect would otherwise fire, which could resolve after
+  // the optimistic user message is appended and wipe it back to [].
+  const skipNextLoadRef = useRef(false)
   useEffect(() => {
     if (activeId == null) {
       setMessages([])
+      return
+    }
+    if (skipNextLoadRef.current) {
+      skipNextLoadRef.current = false
       return
     }
     api.getMessages(activeId).then(setMessages)
@@ -96,9 +111,22 @@ export default function App() {
   }
 
   async function handleSend(text) {
-    if (!activeConversation) return
-    const convId = activeConversation.id
-    const isFirstMessage = messages.length === 0
+    let conv = activeConversation
+    let isFirstMessage = messages.length === 0
+    if (!conv) {
+      const model = models[0]
+      if (!model) {
+        setError('No local models found. Make sure Ollama is running and has at least one model pulled.')
+        return
+      }
+      conv = await api.createConversation(DEFAULT_TITLE, model)
+      isFirstMessage = true
+      skipNextLoadRef.current = true
+      setConversations((prev) => [conv, ...prev])
+      setActiveId(conv.id)
+      setMessages([])
+    }
+    const convId = conv.id
     setMessages((prev) => [...prev, { id: `local-${Date.now()}`, role: 'user', content: text }])
     setSending(true)
     try {
@@ -132,11 +160,11 @@ export default function App() {
       return (
         <div className="loading-screen">
           <p>Couldn&apos;t reach the backend. Make sure Ollama is running, then try again.</p>
-          <button onClick={() => { setBackendFailed(false); setRetryTick((n) => n + 1) }}>Retry</button>
+          <button className="btn-retry mono" onClick={() => { setBackendFailed(false); setRetryTick((n) => n + 1) }}>retry</button>
         </div>
       )
     }
-    return <div className="loading-screen">Loading retrieval indexes and model...</div>
+    return <div className="loading-screen mono">loading retrieval indexes and model&hellip;</div>
   }
 
   return (
@@ -153,6 +181,8 @@ export default function App() {
         onSelect={setActiveId}
         onNew={handleNew}
         onDelete={handleDelete}
+        isDark={isDark}
+        onToggleDark={() => setIsDark((d) => !d)}
       />
       <ChatWindow
         conversation={activeConversation}
