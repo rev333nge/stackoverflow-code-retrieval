@@ -69,10 +69,9 @@ DENSE RETRIEVAL (Phase 3)
 
 RAG
 
-query
- └─ router (gemma: ANSWER | SEARCH)        ← reads SO only when it decides it needs to
-     ├─ ANSWER → answer from model knowledge
-     └─ SEARCH → retrieve top-4
-         └─ confidence gate (top cosine ≥ 0.70?)
-             ├─ OPEN  → answer grounded in docs
-             └─ CLOSED → drop junk, answer from model knowledge
+query → router (gemma, SEARCH-biased) 
+        ├─ ANSWER → answer from model knowledge
+        └─ SEARCH → retrieve top-4 (BM25+dense+LambdaMART)
+                    └─ gate (top cosine ≥ 0.70?)
+                        ├─ open  → answer grounded in docs
+                        └─ closed → drop junk, answer alone

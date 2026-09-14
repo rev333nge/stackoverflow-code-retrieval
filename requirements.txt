@@ -10,3 +10,8 @@ sentence-transformers
 
 # Phase 6
 lightgbm          # LambdaMART reranker
+
+# Phase 7 / desktop app
+requests          # Ollama HTTP API
+fastapi           # local backend for the Electron desktop app
+uvicorn           # ASGI server for the FastAPI backend
