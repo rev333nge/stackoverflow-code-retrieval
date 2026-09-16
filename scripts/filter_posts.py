@@ -1,6 +1,6 @@
-"""Filter the raw dump to pandas/numpy Q&A.
+"""Filter the raw dump to python Q&A.
 
-  questions.parquet - every pandas/numpy question. is_eval_query flags the
+  questions.parquet - every python question. is_eval_query flags the
     ones usable as test queries (accepted answer present, score >= 1, open).
   answers.parquet   - all their answers, weak ones included (needed as
     distractors at eval time).
@@ -41,8 +41,7 @@ SELECT
     (AcceptedAnswerId > 0 AND Score >= 1 AND {NOT_CLOSED}) AS is_eval_query
 FROM read_parquet('{RAW_GLOB}')
 WHERE PostTypeId = 1
-  AND (lower(CAST(Tags AS VARCHAR)) LIKE '%|pandas|%'
-    OR lower(CAST(Tags AS VARCHAR)) LIKE '%|numpy|%')
+  AND lower(CAST(Tags AS VARCHAR)) LIKE '%|python|%'
 """
 
 # Pass 2: answers of those questions. ParentId is a BLOB numeric string.
@@ -77,10 +76,6 @@ SELECT
     (SELECT count(*) FROM questions WHERE is_eval_query)               AS eval_queries,
     (SELECT count(*) FROM questions WHERE is_closed)                   AS closed,
     (SELECT count(*) FROM answers)                                     AS answers,
-    (SELECT count(*) FROM questions WHERE tags LIKE '%|pandas|%')      AS tag_pandas,
-    (SELECT count(*) FROM questions WHERE tags LIKE '%|numpy|%')       AS tag_numpy,
-    (SELECT count(*) FROM questions
-        WHERE tags LIKE '%|pandas|%' AND tags LIKE '%|numpy|%')        AS tag_both,
     (SELECT min(creation_date)::DATE FROM questions)                   AS earliest,
     (SELECT max(creation_date)::DATE FROM questions)                   AS latest
 """
@@ -100,7 +95,7 @@ def main() -> None:
 
     t0 = time.time()
 
-    print("[1/3] scanning all years for pandas/numpy questions ...")
+    print("[1/3] scanning all years for python questions ...")
     con.execute(BUILD_QUESTIONS)
     print(f"      {scalar(con, 'SELECT count(*) FROM questions'):,} questions kept")
 
@@ -121,9 +116,6 @@ def main() -> None:
     print("SUMMARY")
     print("=" * 60)
     print(f"  questions (corpus side) : {s['questions']:,}")
-    print(f"    tagged pandas         : {s['tag_pandas']:,}")
-    print(f"    tagged numpy          : {s['tag_numpy']:,}")
-    print(f"    tagged both           : {s['tag_both']:,}")
     print(f"    closed                : {s['closed']:,}")
     print(f"  eval queries            : {s['eval_queries']:,}")
     print(f"  answers (corpus docs)   : {s['answers']:,}")

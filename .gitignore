@@ -9,6 +9,10 @@ __pycache__/
 venv/
 .env
 
+# Node — reinstallable via `npm install`, never committed.
+node_modules/
+dist/
+
 # Editor / OS
 .vscode/
 .idea/

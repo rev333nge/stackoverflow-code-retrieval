@@ -56,13 +56,13 @@ def list_models() -> list[str]:
     return [m["name"] for m in resp.json().get("models", [])]
 
 
-ROUTER_PROMPT = """You are a helpful assistant with a pandas/numpy StackOverflow search tool available.
+ROUTER_PROMPT = """You are a helpful assistant with a Python StackOverflow search tool available.
 Decide whether to use it before replying to the user's latest message.
 
 Searching is cheap; a wrong or oversimplified answer is costly. So WHEN IN DOUBT, SEARCH.
 Only choose ANSWER if the message is simple (including plain conversation, like a greeting)
 and, when it is a technical question, you are certain your unaided answer is correct and complete.
-Choose SEARCH for anything pandas/numpy related that is tricky, niche, performance-sensitive,
+Choose SEARCH for anything Python related that is tricky, niche, performance-sensitive,
 easy to get subtly wrong, or where a specific idiom/technique matters.
 
 Reply with ONLY one word: ANSWER or SEARCH.
@@ -71,8 +71,8 @@ Message: {q}
 
 One-word decision:"""
 
-ANSWER_ALONE_PROMPT = """You are a helpful assistant, especially knowledgeable about pandas/numpy.
-Reply to the user's latest message directly and naturally. If it is a pandas/numpy programming
+ANSWER_ALONE_PROMPT = """You are a helpful assistant, especially knowledgeable about Python.
+Reply to the user's latest message directly and naturally. If it is a Python programming
 question, explain clearly and include a short code example. If it is not a programming question
 (a greeting, a follow-up, small talk), just respond to it normally -- do not ask for a question.
 {history}
@@ -80,7 +80,7 @@ Message: {q}
 
 Reply:"""
 
-ANSWER_WITH_DOCS_PROMPT = """You are answering a pandas/numpy question. Use the reference answers below as your source. Give ONE clear, focused answer - lead with the best approach and a short code example. Do not list every reference separately.
+ANSWER_WITH_DOCS_PROMPT = """You are answering a Python question. Use the reference answers below as your source. Give ONE clear, focused answer - lead with the best approach and a short code example. Do not list every reference separately.
 {history}
 Question: {q}
 

@@ -26,10 +26,10 @@ PARAMS = {
     "objective": "lambdarank",
     "metric": "ndcg",
     "eval_at": [10],
-    "learning_rate": 0.2,      # chosen via tune_ltr.py val search - tied for best (0.8393),
-    "num_leaves": 15,          # 3x cheaper than the other tied config (92 vs 349 rounds)
-    "min_data_in_leaf": 100,
-    "verbosity": -1,
+    "learning_rate": 0.1,      # chosen via tune_ltr.py val search on the python corpus -
+    "num_leaves": 15,          # best of 12 configs (val ndcg@10 0.8387, best_iter=290).
+    "min_data_in_leaf": 100,   # Different winner than the pandas/numpy run (lr=0.2) -
+    "verbosity": -1,           # re-tuning on the bigger corpus actually mattered here.
 }
 NUM_BOOST_ROUND = 500
 EARLY_STOPPING_ROUNDS = 30

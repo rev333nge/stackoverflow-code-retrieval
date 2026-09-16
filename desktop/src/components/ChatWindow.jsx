@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import Message from './Message'
 
 const SUGGESTIONS = [
-  'explain a pandas function',
+  'explain a python function',
   'debug this traceback',
   'compare two approaches',
 ]
@@ -45,7 +45,7 @@ function Composer({ draft, setDraft, onSubmit, sending }) {
         value={draft}
         onChange={handleChange}
         onKeyDown={handleKeyDown}
-        placeholder="Ask a pandas/numpy question..."
+        placeholder="Ask a Python question..."
         rows={1}
       />
       <button className="mono" type="submit" disabled={sending || !draft.trim()}>send</button>

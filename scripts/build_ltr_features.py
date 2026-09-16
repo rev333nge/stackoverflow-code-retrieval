@@ -1,8 +1,13 @@
 """Build (query, doc) feature rows for the LambdaMART reranker.
 
-    python scripts/build_ltr_features.py <variant> <split>
-      variant = a | b
-      split   = train | val | test
+    python scripts/build_ltr_features.py <variant> <split> [sample_size]
+      variant     = a | b
+      split       = train | val | test
+      sample_size = optional cap on the number of queries (random subset,
+                    fixed seed). Retrieval (BM25 + dense) is run per query,
+                    so this is the knob for keeping train affordable on a
+                    huge corpus -- LambdaMART doesn't need every training
+                    query to learn a 5-feature combination well.
 
 Candidate pool per query = BM25 top-100 union dense top-100 (the same pool
 the hybrid method fuses in evaluate.py). A candidate missing from one
@@ -26,13 +31,21 @@ import pandas as pd
 from evaluate import PROCESSED, load_qrels, load_split, retrieve_bm25, retrieve_dense, to_doc_ids
 
 RRF_K = 5   # chosen in the Phase 5 val sweep
+SAMPLE_SEED = 0
 
 
-def build_features(variant: str, split: str) -> pd.DataFrame:
+def build_features(variant: str, split: str, sample_size: int | None = None) -> pd.DataFrame:
     con = duckdb.connect()
     qrels = load_qrels(con)
     qids, texts = load_split(con, split)
-    print(f"variant {variant}, split {split}: {len(qids):,} queries")
+    if sample_size is not None and sample_size < len(qids):
+        rng = np.random.default_rng(SAMPLE_SEED)
+        idx = rng.choice(len(qids), size=sample_size, replace=False)
+        qids = [qids[i] for i in idx]
+        texts = [texts[i] for i in idx]
+        print(f"variant {variant}, split {split}: sampled {len(qids):,} of the full split")
+    else:
+        print(f"variant {variant}, split {split}: {len(qids):,} queries")
 
     print("retrieving ...")
     bm25_idx, bm25_scores, bm25_docids_arr = retrieve_bm25(variant, texts)
@@ -74,10 +87,11 @@ def main() -> None:
     args = sys.argv[1:]
     variant = args[0].lower() if len(args) > 0 else "a"
     split = args[1].lower() if len(args) > 1 else "train"
+    sample_size = int(args[2]) if len(args) > 2 else None
     if split not in ("train", "val", "test"):
         raise SystemExit("split must be 'train', 'val' or 'test'")
 
-    df = build_features(variant, split)
+    df = build_features(variant, split, sample_size)
 
     out = PROCESSED / f"ltr_{split}_{variant}.parquet"
     df.to_parquet(out, index=False)

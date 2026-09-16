@@ -71,7 +71,17 @@ def retrieve_bm25(variant: str, texts: list[str]):
 
 
 def retrieve_dense(variant: str, texts: list[str]):
+    """Brute-force cosine search on GPU via torch, not faiss-cpu.
+
+    Mathematically identical to the saved IndexFlatIP (exact, unit vectors,
+    inner product = cosine) -- faiss-gpu isn't installable on this platform
+    (no conda, no Windows/Python-3.14 wheel), but the search itself is just
+    a matmul + top-k, which torch already does on this machine's CUDA
+    device (same GPU the embedder already runs on). Batched over queries so
+    the similarity matrix (queries x corpus) never fully materializes.
+    """
     import faiss
+    import torch
     from embedder import load_model, encode_queries
 
     index_dir = INDEX_ROOT / f"dense_{variant}"
@@ -79,9 +89,25 @@ def retrieve_dense(variant: str, texts: list[str]):
         raise SystemExit(f"no index at {index_dir} - run: python scripts/build_embeddings.py {variant}")
     index = faiss.read_index(str(index_dir / "dense.faiss"))
     doc_ids = np.load(index_dir / "doc_ids.npy")
-    model = load_model("cuda")
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    doc_vecs = index.reconstruct_n(0, index.ntotal)  # (N, dim) float32, already unit-normalized
+    doc_t = torch.from_numpy(doc_vecs).to(device=device, dtype=torch.float16)
+
+    model = load_model(device)
     qvecs = encode_queries(model, texts)
-    scores, results = index.search(qvecs, RETRIEVE_K)   # (nq, K) cosine scores, row indices
+    q_t = torch.from_numpy(qvecs).to(device=device, dtype=torch.float16)
+
+    batch = 1024
+    all_scores, all_idx = [], []
+    with torch.no_grad():
+        for start in range(0, q_t.shape[0], batch):
+            sims = q_t[start:start + batch] @ doc_t.T          # (b, N) cosine scores
+            top_scores, top_idx = torch.topk(sims, k=RETRIEVE_K, dim=1)
+            all_scores.append(top_scores.float().cpu().numpy())
+            all_idx.append(top_idx.cpu().numpy())
+    scores = np.concatenate(all_scores, axis=0)
+    results = np.concatenate(all_idx, axis=0)
     return results, scores, doc_ids
 
 

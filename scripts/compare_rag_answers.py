@@ -28,9 +28,9 @@ from generate_rag_answers import load_docs, MODEL, OLLAMA_URL
 PROCESSED = Path("data/processed")
 OPTIONS = {"num_ctx": 8192}
 
-PROMPT_BEFORE = "Answer this pandas/numpy programming question clearly and concisely, with a short code example.\n\nQuestion: {q}"
+PROMPT_BEFORE = "Answer this Python programming question clearly and concisely, with a short code example.\n\nQuestion: {q}"
 
-PROMPT_AFTER = """You are answering a pandas/numpy question. Use the reference answers below as your source. Give ONE clear, focused answer - lead with the best approach and a short code example. Do not list every reference separately.
+PROMPT_AFTER = """You are answering a Python question. Use the reference answers below as your source. Give ONE clear, focused answer - lead with the best approach and a short code example. Do not list every reference separately.
 
 Question: {q}
 

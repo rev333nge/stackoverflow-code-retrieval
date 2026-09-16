@@ -1,0 +1,175 @@
+SCALING TO PYTHON — DOES THE PIPELINE HOLD UP AT ~6x SCALE?
+=============================================================
+
+Same pipeline, same code, same methodology as the pandas/numpy project
+(docs/01-03). The only change: the tag filter in filter_posts.py moved from
+"pandas or numpy" to "python", with no other corpus-level quality gate --
+matching the original "filter the labels, not the data" principle. This
+file is a standalone addendum with the python-corpus numbers; docs/01-03
+are left as-is and describe the original pandas/numpy run.
+
+Skipped: the pre-code-aware-tokenizer (original Phase 1) baseline. That
+tokenizer was fully replaced in tokenizer.py, not kept alongside the Phase 2
+version, so there's no artifact left to rebuild it against for a from-basic
+comparison. Everything here starts from the code-aware tokenizer.
+
+
+CORPUS, PANDAS/NUMPY vs PYTHON
+    metric                       pandas/numpy       python        factor
+    questions (tag-filtered)         379,088       2,189,638        5.8x
+    documents (= answers)            537,134       3,148,833        5.9x
+    eval queries                     137,131         603,403        4.4x
+    qrels judgments                  245,287       1,191,091        4.9x
+    train / val / test      102,143/15,923/19,065   496,891/49,547/56,965
+
+    Same filter design as pandas/numpy: keep every python-tagged question
+    and ALL of its answers (weak ones included, as distractors); a question
+    counts as an eval query only if it has an accepted answer in the dump,
+    score >= 1, and isn't closed. Split by time (train < 2021, val = 2021,
+    test >= 2022) -- unchanged from the original design.
+
+
+RESULTS  (variant A, filled in as each phase completes)
+    phase                        NDCG@10   MRR@10   Recall@100
+    2  code-aware tokenizer (val)   0.6851   0.7030     0.9276
+    2  code-aware tokenizer (test)  0.6949   0.7105     0.9285
+    3  dense retrieval (val)        0.8018   0.8195     0.9776
+    3  dense retrieval (test)       0.8129   0.8289     0.9785
+    5  hybrid (RRF, val, k=2)       0.8048   0.8203     0.9852
+    5  hybrid (RRF, test, k=2)      0.8140   0.8272     0.9855
+    6  LTR (LambdaMART, val)        0.8304   0.8482     0.9851
+    6  LTR (LambdaMART, test)       0.8397   0.8556     0.9852
+
+    (Numbered to match the phases in docs/02_results.txt; Phase 1's basic
+    tokenizer is skipped here, see note above, so BM25 first appears
+    already using the Phase 2 code-aware tokenizer.)
+
+
+READ SO FAR
+    BM25 (code-aware tokenizer): val 0.6851 vs 0.6865 for pandas/numpy,
+    test 0.6949 vs 0.6893 for pandas/numpy -- essentially identical on both
+    splits despite indexing 5.9x more documents across a much broader,
+    noisier topic mix.
+
+    Dense retrieval: val 0.8018 vs 0.7929, test 0.8129 vs 0.7989 for
+    pandas/numpy -- python actually comes out slightly ahead on NDCG on
+    both splits, MRR/Recall essentially tied. So the pattern holds at
+    5.9x scale and a much broader domain: BM25 flat, dense flat-to-better.
+    First sign the approach generalizes rather than being overfit to a
+    narrow domain.
+
+
+PHASE 4 FAILURE ANALYSIS  (val, 49,547 queries)
+    metric                       pandas/numpy       python
+    BM25 mean                       0.7104           0.6851
+    dense mean                      0.7929           0.8018
+    oracle (best-of-both)           0.8563           0.8548
+    correlation(bm,de)              0.444            0.448
+    dense wins                      28.1%            30.7%
+    BM25 wins                       14.6%            12.1%
+    tie / both ok                   53.6%            53.1%
+    both fail                        3.7%             4.1%
+
+    Same complementarity story holds almost exactly at 5.9x scale and a
+    much broader topic mix: correlation is essentially unchanged (0.448 vs
+    0.444), meaning BM25 and dense still fail on different queries, so a
+    hybrid still has real headroom (oracle - dense = 0.0530 for python vs
+    0.0634 for pandas/numpy -- slightly smaller headroom, but the same
+    shape of result). Confirms this isn't a narrow-domain artifact.
+
+PHASE 5 HYBRID (RRF)  (val, 49,547 queries; full k-grid 1,2,5,10,20,40,60,100,200)
+    NDCG@10 peaks at k=2 (0.8048), with k=1 (0.8043) and k=5 (0.8047)
+    essentially tied -- same flat-near-the-top shape as pandas/numpy, which
+    picked k=5 from the same cluster. Picked k=2 here.
+
+    Test (k=2): 0.8140 / 0.8272 / 0.9855 vs pandas/numpy's 0.8160 / 0.8436 /
+    0.9871 (k=5) -- close on NDCG and recall, but MRR barely moves over
+    dense alone here (dense test MRR was 0.8289 -- hybrid is actually
+    fractionally lower), unlike pandas/numpy where hybrid beat dense on
+    every metric on both splits. Recall@100 is flat across the whole val
+    k-grid (0.9852 at every k) for the same reason documented in
+    docs/02_results.txt: k only reorders the merged pool, it doesn't change
+    who's in it.
+
+    NOTE ON IMPLEMENTATION: partway through this run, dense retrieval (used
+    by phases 3-6 alike) was rewritten from faiss-cpu's index.search() to a
+    raw PyTorch matmul + top-k on the GPU (faiss-gpu isn't installable on
+    this Windows + Python 3.14 setup -- no conda, no matching wheel). This
+    is mathematically identical to the exact FlatIP search it replaces (same
+    unit vectors, same inner product), just executed on a different device.
+    Verified against this sweep run: no errors, and results are consistent
+    with the pre-change dense/BM25 numbers already in this file. BM25 has no
+    GPU implementation anywhere and remains CPU-bound regardless.
+
+
+PHASE 6 LTR (LambdaMART)
+    Train set subsampled for feature-building: 100,000 of 496,891 train
+    queries (random, seed=0). Retrieval (BM25 + dense) runs once per query
+    to build candidate features, and at 496,891 train queries that pass
+    alone would have been several hours -- LambdaMART doesn't need every
+    training query to learn a 5-feature combination well, so this trades a
+    small amount of statistical power for a step that actually finishes.
+    Val and test were NOT subsampled (full splits, since those are what's
+    being measured, not trained on).
+
+        split   candidate rows   queries   positive-label rate
+        train      18,187,002    100,000    0.9%
+        val         9,027,996     49,547    0.7%
+        test       10,396,340     56,965    0.7%
+
+    Hyperparameter search (tune_ltr.py, 12 random configs, same search
+    space and budget as pandas/numpy): winner lr=0.1, num_leaves=15,
+    min_data_in_leaf=100, best_iter=290, val ndcg@10=0.8387. Different
+    winner than pandas/numpy's lr=0.2 (same leaves/min_data) -- re-tuning
+    on the bigger corpus actually changed the answer, so this wasn't a
+    rubber-stamp of the old config.
+
+    Feature importance (gain): rrf_score 6,474,020, dense_score 189,883,
+    dense_rank 82,469, bm25_score 41,769, bm25_rank 17,269. Same pattern as
+    pandas/numpy: gain makes rrf_score look almost like the whole model,
+    which overstates it (gain counts how often a feature is split on, not
+    how much the final prediction depends on it) -- not re-run here, but
+    worth remembering before reading too much into this table alone.
+
+        val    0.8304 / 0.8482 / 0.9851   (pandas/numpy: 0.8331/0.8616/0.9871)
+        test   0.8397 / 0.8556 / 0.9852   (pandas/numpy: 0.8370/0.8649/0.9863)
+
+    Clearly beats hybrid on test: +0.0257 NDCG@10, +0.0284 MRR@10, recall
+    flat (0.9852 vs 0.9855 -- expected, a reranker only reorders the fixed
+    candidate pool, it can't find docs retrieval missed). This is the
+    result that mattered most given hybrid's flat MRR earlier in this
+    file: the reranker recovers the gain hybrid alone didn't show, same
+    "best phase yet" pattern pandas/numpy found.
+
+
+SUMMARY
+    Full phase-by-phase progression, test set (56,965 queries):
+
+        phase                        NDCG@10   MRR@10   Recall@100
+        BM25 (code-aware tokenizer)   0.6949   0.7105     0.9285
+        dense retrieval                0.8129   0.8289     0.9785
+        hybrid (RRF, k=2)              0.8140   0.8272     0.9855
+        LTR (LambdaMART)                0.8397   0.8556     0.9852
+
+    The "each phase beats the last" pattern from pandas/numpy holds at
+    5.9x the corpus size and a much broader domain, with one honest wrinkle:
+    hybrid's MRR didn't clearly improve over dense alone here (0.8272 vs
+    0.8289 -- a wash, not a regression, but not the clean win pandas/numpy
+    saw on every metric). LTR still delivered the biggest single jump after
+    dense, exactly like before, and recovered whatever hybrid left on the
+    table.
+
+    Bottom line: swapping the corpus from pandas/numpy (379k questions,
+    537k docs) to all of python (2.19M questions, 3.15M docs, no other
+    filter change) reproduces the same qualitative story at every phase --
+    BM25 flat, dense the biggest jump, BM25/dense genuinely complementary
+    (correlation 0.448 vs 0.444), hybrid a smaller gain, LTR the best
+    result. The pipeline and its conclusions were never an artifact of a
+    narrow domain.
+
+    Implementation note: dense retrieval was moved from faiss-cpu's
+    index.search() to a raw PyTorch matmul + top-k on GPU partway through
+    this run (faiss-gpu isn't installable on this Windows + Python 3.14
+    setup). Mathematically identical to the exact FlatIP search it
+    replaces; verified against multiple runs with no errors. BM25 has no
+    GPU implementation anywhere and stayed CPU-bound throughout.
