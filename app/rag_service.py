@@ -34,8 +34,11 @@ class RagService:
         self.rag = AdaptiveRAG(variant=variant, device=device)
 
     def answer(self, query: str, history: list[tuple[str, str]] | None = None,
-               model: str | None = None) -> dict:
-        return self.rag.answer(query, history, model=model)
+               model: str | None = None, *, temperature: float | None = None,
+               max_tokens: int | None = None, n_ctx: int | None = None,
+               n_gpu_layers: int | None = None) -> dict:
+        return self.rag.answer(query, history, model=model, temperature=temperature,
+                               max_tokens=max_tokens, n_ctx=n_ctx, n_gpu_layers=n_gpu_layers)
 
     def loading_status(self) -> str | None:
         """Path of the .gguf currently being loaded, or None -- polled by

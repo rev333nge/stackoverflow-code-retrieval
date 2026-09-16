@@ -115,7 +115,10 @@ class AdaptiveRAG:
     def __init__(self, variant: str = "a", device: str = "cuda", model: str | None = None) -> None:
         self.model = model  # absolute path to a .gguf file, chosen by the user
         self._llm: Llama | None = None
-        self._llm_path: str | None = None
+        # Cache key of the loaded model: (path, n_ctx, n_gpu_layers). n_ctx and
+        # n_gpu_layers are baked in at load time, so a change to either -- not
+        # just the path -- means the cached instance is stale and must reload.
+        self._llm_key: tuple[str, int, int] | None = None
         # Path of the model currently being (re)loaded into self._llm, or
         # None the rest of the time -- polled by /api/status so the UI can
         # show real loading progress instead of guessing client-side whether
@@ -152,22 +155,25 @@ class AdaptiveRAG:
         self._llm_lock = threading.Lock()
 
     # ---- LLM calls (all gemma, local via llama.cpp) ----
-    def _load_llm(self, model_path: str) -> Llama:
-        """Return the cached Llama instance for model_path, (re)loading if needed.
+    def _load_llm(self, model_path: str, n_ctx: int, n_gpu_layers: int) -> Llama:
+        """Return the cached Llama for (model_path, n_ctx, n_gpu_layers),
+        (re)loading if any of those changed.
 
         Must be called with _llm_lock held.
         """
-        if self._llm is not None and self._llm_path == model_path:
+        key = (model_path, n_ctx, n_gpu_layers)
+        if self._llm is not None and self._llm_key == key:
             return self._llm
         path = Path(model_path)
         if not path.is_file():
             raise RuntimeError(f"model file not found: {model_path}")
         self._loading_path = model_path
         try:
-            self._llm = Llama(model_path=str(path), n_ctx=N_CTX, n_gpu_layers=-1, verbose=False)
+            self._llm = Llama(model_path=str(path), n_ctx=n_ctx,
+                              n_gpu_layers=n_gpu_layers, verbose=False)
         finally:
             self._loading_path = None
-        self._llm_path = model_path
+        self._llm_key = key
         return self._llm
 
     def loading_status(self) -> str | None:
@@ -176,18 +182,16 @@ class AdaptiveRAG:
         attribute read, and the GIL makes that atomic."""
         return self._loading_path
 
-    def _generate(self, prompt: str, max_tokens: int = 1024, temperature: float | None = None,
-                  model: str | None = None) -> str:
+    def _generate(self, prompt: str, *, max_tokens: int, temperature: float,
+                  model: str | None = None, n_ctx: int = N_CTX,
+                  n_gpu_layers: int = -1) -> str:
         model_path = model or self.model
         if not model_path:
             raise RuntimeError("no model selected -- pick a .gguf file first")
         with self._llm_lock:
             try:
-                llm = self._load_llm(model_path)
-                out = llm.create_completion(
-                    prompt, max_tokens=max_tokens,
-                    temperature=0.7 if temperature is None else temperature,
-                )
+                llm = self._load_llm(model_path, n_ctx, n_gpu_layers)
+                out = llm.create_completion(prompt, max_tokens=max_tokens, temperature=temperature)
             except RuntimeError:
                 raise
             except Exception as e:
@@ -198,10 +202,16 @@ class AdaptiveRAG:
         self.model = model
 
     def route(self, query: str, history: list[tuple[str, str]] | None = None,
-              model: str | None = None) -> str:
-        """Return 'SEARCH' or 'ANSWER' (defaults to ANSWER if unclear)."""
+              model: str | None = None, n_ctx: int = N_CTX, n_gpu_layers: int = -1) -> str:
+        """Return 'SEARCH' or 'ANSWER' (defaults to ANSWER if unclear).
+
+        Always uses temperature 0 -- this is a classifier step, not the user-
+        facing answer, so the user's temperature setting deliberately doesn't
+        apply here. The load params (n_ctx/n_gpu_layers) still must match the
+        answer step's, since it's the same cached model instance."""
         prompt = ROUTER_PROMPT.format(history=_format_history(history), q=query)
-        raw = self._generate(prompt, max_tokens=10, temperature=0, model=model).upper()
+        raw = self._generate(prompt, max_tokens=10, temperature=0, model=model,
+                             n_ctx=n_ctx, n_gpu_layers=n_gpu_layers).upper()
         return "SEARCH" if "SEARCH" in raw else "ANSWER"
 
     # ---- retrieval (BM25 + dense -> LTR rerank) ----
@@ -256,7 +266,9 @@ class AdaptiveRAG:
 
     # ---- the full adaptive flow ----
     def answer(self, query: str, history: list[tuple[str, str]] | None = None,
-               model: str | None = None) -> dict:
+               model: str | None = None, *, temperature: float | None = None,
+               max_tokens: int | None = None, n_ctx: int | None = None,
+               n_gpu_layers: int | None = None) -> dict:
         """Run router -> (retrieve -> gate) -> generate. Returns answer + trace.
 
         history is the recent conversation as [(role, content), ...] ("user"/
@@ -268,11 +280,24 @@ class AdaptiveRAG:
         model overrides self.model for this call only (does not mutate shared
         state) -- lets one AdaptiveRAG instance safely serve concurrent
         requests for different conversations/models without a race.
+
+        temperature/max_tokens shape the user-facing answer generation only
+        (the router is always deterministic). n_ctx/n_gpu_layers are load-time:
+        a value that differs from the currently-loaded model triggers a reload.
+        All four default to the module baselines when not given (keeps the CLI
+        and any direct caller working without passing settings).
         """
+        temperature = 0.7 if temperature is None else temperature
+        max_tokens = 1024 if max_tokens is None else max_tokens
+        n_ctx = N_CTX if n_ctx is None else n_ctx
+        n_gpu_layers = -1 if n_gpu_layers is None else n_gpu_layers
+        load = {"n_ctx": n_ctx, "n_gpu_layers": n_gpu_layers}
+
         hist = _format_history(history)
-        route = self.route(query, history, model=model)
+        route = self.route(query, history, model=model, **load)
         if route == "ANSWER":
-            text = self._generate(ANSWER_ALONE_PROMPT.format(history=hist, q=query), model=model)
+            text = self._generate(ANSWER_ALONE_PROMPT.format(history=hist, q=query),
+                                   max_tokens=max_tokens, temperature=temperature, model=model, **load)
             return {"route": "ANSWER", "searched": False, "top_cosine": None,
                     "gate": None, "used_docs": False, "retrieved": [], "answer": text}
 
@@ -284,11 +309,13 @@ class AdaptiveRAG:
         retrieved = [{"title": t, "url": f"https://stackoverflow.com/a/{d}"} for d, t, _ in docs]
         if gate_open:
             context = "\n\n".join(f"[{i}] {t}\n{b}" for i, (_, t, b) in enumerate(docs, 1))
-            text = self._generate(ANSWER_WITH_DOCS_PROMPT.format(history=hist, q=query, context=context), model=model)
+            text = self._generate(ANSWER_WITH_DOCS_PROMPT.format(history=hist, q=query, context=context),
+                                   max_tokens=max_tokens, temperature=temperature, model=model, **load)
             return {"route": "SEARCH", "searched": True, "top_cosine": top_cosine,
                     "gate": "open", "used_docs": True, "retrieved": retrieved, "answer": text}
         # gate closed: retrieval too weak -> answer from model knowledge instead of junk
-        text = self._generate(ANSWER_ALONE_PROMPT.format(history=hist, q=query), model=model)
+        text = self._generate(ANSWER_ALONE_PROMPT.format(history=hist, q=query),
+                               max_tokens=max_tokens, temperature=temperature, model=model, **load)
         return {"route": "SEARCH", "searched": True, "top_cosine": top_cosine,
                 "gate": "closed", "used_docs": False, "retrieved": retrieved, "answer": text}
 

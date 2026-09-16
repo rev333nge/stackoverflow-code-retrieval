@@ -423,6 +423,129 @@
   }
 }
 
+/* ---- model settings ---- */
+
+.settings-wrap {
+  position: relative;
+}
+
+.settings-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 5px;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+}
+
+.settings-trigger:hover {
+  background: var(--hover-bg);
+  color: var(--text);
+}
+
+.settings-trigger:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.settings-trigger:disabled:hover {
+  background: transparent;
+  color: var(--muted);
+}
+
+.settings-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  width: 280px;
+  background: var(--card-bg);
+  border: 1px solid var(--strong-border);
+  border-radius: 8px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+  z-index: 20;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.16);
+  transform-origin: top right;
+}
+
+[data-theme='dark'] .settings-panel {
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .settings-panel {
+    animation: dropdownIn 0.14s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+}
+
+.settings-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.settings-label-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.settings-label {
+  font-size: 12.5px;
+  color: var(--text);
+}
+
+.settings-val {
+  font-size: 12.5px;
+  color: var(--accent);
+}
+
+.settings-hint {
+  font-size: 10.5px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.settings-num {
+  width: 88px;
+  padding: 4px 8px;
+  border: 1px solid var(--select-border);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 12.5px;
+  text-align: right;
+}
+
+.settings-num:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.settings-row input[type='range'] {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+.settings-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 1px 0 0;
+}
+
+.settings-note {
+  font-size: 10.5px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
 /* ---- empty state ---- */
 
 .empty-state {

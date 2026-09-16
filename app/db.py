@@ -38,12 +38,30 @@ def _synchronized(fn):
             return fn(*args, **kwargs)
     return wrapper
 
+# Per-conversation model settings. Defaults mirror what was hardcoded before
+# settings existed, so pre-existing conversations behave identically. Keep the
+# DEFAULT column values in SCHEMA below and the ALTER migration in sync with
+# this dict. temperature/max_tokens are generation-time (cheap, per message);
+# n_ctx/n_gpu_layers are load-time (changing them reloads the model).
+DEFAULT_SETTINGS = {
+    "temperature": 0.7,
+    "max_tokens": 1024,
+    "n_ctx": 8192,
+    "n_gpu_layers": -1,  # -1 = offload all layers to GPU
+}
+
+_CONV_COLS = "id, title, model, created_at, temperature, max_tokens, n_ctx, n_gpu_layers"
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS conversations (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    title      TEXT NOT NULL,
-    model      TEXT NOT NULL,
-    created_at REAL NOT NULL
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    title        TEXT NOT NULL,
+    model        TEXT NOT NULL,
+    created_at   REAL NOT NULL,
+    temperature  REAL    NOT NULL DEFAULT 0.7,
+    max_tokens   INTEGER NOT NULL DEFAULT 1024,
+    n_ctx        INTEGER NOT NULL DEFAULT 8192,
+    n_gpu_layers INTEGER NOT NULL DEFAULT -1
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -67,14 +85,43 @@ def connect(check_same_thread: bool = True) -> sqlite3.Connection:
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA foreign_keys = ON")
     con.executescript(SCHEMA)
+    _migrate_settings_columns(con)
     return con
 
 
+def _migrate_settings_columns(con: sqlite3.Connection) -> None:
+    """Add the settings columns to a conversations table created before they
+    existed. CREATE TABLE IF NOT EXISTS won't alter an existing table, so a
+    database from an earlier version is missing them -- add each absent one
+    with the same default the fresh schema uses."""
+    existing = {r["name"] for r in con.execute("PRAGMA table_info(conversations)")}
+    decls = {
+        "temperature": "REAL NOT NULL DEFAULT 0.7",
+        "max_tokens": "INTEGER NOT NULL DEFAULT 1024",
+        "n_ctx": "INTEGER NOT NULL DEFAULT 8192",
+        "n_gpu_layers": "INTEGER NOT NULL DEFAULT -1",
+    }
+    for col, decl in decls.items():
+        if col not in existing:
+            con.execute(f"ALTER TABLE conversations ADD COLUMN {col} {decl}")
+    con.commit()
+
+
 @_synchronized
-def create_conversation(con: sqlite3.Connection, title: str, model: str) -> int:
+def create_conversation(con: sqlite3.Connection, title: str, model: str,
+                        temperature: float | None = None, max_tokens: int | None = None,
+                        n_ctx: int | None = None, n_gpu_layers: int | None = None) -> int:
+    s = DEFAULT_SETTINGS
     cur = con.execute(
-        "INSERT INTO conversations (title, model, created_at) VALUES (?, ?, ?)",
-        (title, model, time.time()),
+        """INSERT INTO conversations (title, model, created_at, temperature, max_tokens, n_ctx, n_gpu_layers)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (
+            title, model, time.time(),
+            s["temperature"] if temperature is None else temperature,
+            s["max_tokens"] if max_tokens is None else max_tokens,
+            s["n_ctx"] if n_ctx is None else n_ctx,
+            s["n_gpu_layers"] if n_gpu_layers is None else n_gpu_layers,
+        ),
     )
     con.commit()
     return cur.lastrowid
@@ -83,14 +130,14 @@ def create_conversation(con: sqlite3.Connection, title: str, model: str) -> int:
 @_synchronized
 def list_conversations(con: sqlite3.Connection) -> list[sqlite3.Row]:
     return con.execute(
-        "SELECT id, title, model, created_at FROM conversations ORDER BY created_at DESC"
+        f"SELECT {_CONV_COLS} FROM conversations ORDER BY created_at DESC"
     ).fetchall()
 
 
 @_synchronized
 def get_conversation(con: sqlite3.Connection, conversation_id: int) -> sqlite3.Row | None:
     return con.execute(
-        "SELECT id, title, model, created_at FROM conversations WHERE id = ?",
+        f"SELECT {_CONV_COLS} FROM conversations WHERE id = ?",
         (conversation_id,),
     ).fetchone()
 
@@ -104,6 +151,25 @@ def rename_conversation(con: sqlite3.Connection, conversation_id: int, title: st
 @_synchronized
 def set_conversation_model(con: sqlite3.Connection, conversation_id: int, model: str) -> None:
     con.execute("UPDATE conversations SET model = ? WHERE id = ?", (model, conversation_id))
+    con.commit()
+
+
+@_synchronized
+def set_conversation_settings(con: sqlite3.Connection, conversation_id: int, *,
+                              temperature: float | None = None, max_tokens: int | None = None,
+                              n_ctx: int | None = None, n_gpu_layers: int | None = None) -> None:
+    """Update only the settings that were provided (others left untouched)."""
+    updates = [(c, v) for c, v in (
+        ("temperature", temperature), ("max_tokens", max_tokens),
+        ("n_ctx", n_ctx), ("n_gpu_layers", n_gpu_layers),
+    ) if v is not None]
+    if not updates:
+        return
+    assignments = ", ".join(f"{c} = ?" for c, _ in updates)
+    con.execute(
+        f"UPDATE conversations SET {assignments} WHERE id = ?",
+        [v for _, v in updates] + [conversation_id],
+    )
     con.commit()
 
 

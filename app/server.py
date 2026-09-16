@@ -67,6 +67,10 @@ class NewConversation(BaseModel):
 class ConversationUpdate(BaseModel):
     title: str | None = None
     model: str | None = None
+    temperature: float | None = None
+    max_tokens: int | None = None
+    n_ctx: int | None = None
+    n_gpu_layers: int | None = None
 
 
 class NewMessage(BaseModel):
@@ -113,6 +117,11 @@ def update_conversation(conversation_id: int, body: ConversationUpdate):
         db.rename_conversation(con, conversation_id, body.title)
     if body.model is not None:
         db.set_conversation_model(con, conversation_id, body.model)
+    db.set_conversation_settings(
+        con, conversation_id,
+        temperature=body.temperature, max_tokens=body.max_tokens,
+        n_ctx=body.n_ctx, n_gpu_layers=body.n_gpu_layers,
+    )
     return {"ok": True}
 
 
@@ -138,10 +147,14 @@ def post_message(conversation_id: int, body: NewMessage):
     user_msg_id = db.add_message(con, conversation_id, "user", body.content)
 
     try:
-        # model is passed per-call (not set on shared state) so concurrent
-        # requests for different conversations can't race on which model
-        # answers which one -- see AdaptiveRAG.answer()'s docstring.
-        result = service.answer(body.content, history, model=conv["model"])
+        # model + settings are passed per-call (not set on shared state) so
+        # concurrent requests for different conversations can't race on which
+        # model/config answers which one -- see AdaptiveRAG.answer()'s docstring.
+        result = service.answer(
+            body.content, history, model=conv["model"],
+            temperature=conv["temperature"], max_tokens=conv["max_tokens"],
+            n_ctx=conv["n_ctx"], n_gpu_layers=conv["n_gpu_layers"],
+        )
     except Exception as e:
         # Generation failed, so there's no reply to pair with the message we
         # just stored. Roll it back instead of leaving a dangling half-turn

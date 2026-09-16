@@ -14,6 +14,134 @@ function basename(modelPath) {
   return modelPath.split(/[\\/]/).pop()
 }
 
+// Parse a text-input value to an int, clamped to [min, max]; empty/garbage
+// falls back to `fallback` so a half-typed field can't persist a bad value.
+function clampInt(value, min, max, fallback) {
+  const n = parseInt(value, 10)
+  if (Number.isNaN(n)) return fallback
+  return Math.min(max, Math.max(min, n))
+}
+
+function SettingsIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 15 15" fill="none" aria-hidden="true">
+      <path d="M2 4.5h6M11 4.5h2M2 10.5h2M7 10.5h6" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+      <circle cx="9.5" cy="4.5" r="1.7" stroke="currentColor" strokeWidth="1.2" />
+      <circle cx="4.5" cy="10.5" r="1.7" stroke="currentColor" strokeWidth="1.2" />
+    </svg>
+  )
+}
+
+// The controls, remounted per conversation (via key) so each field starts
+// from that conversation's saved value. Generation settings (temperature,
+// max tokens) take effect on the next message; load settings (context, GPU
+// layers) reload the model on the next message -- flagged in their hints.
+function SettingsFields({ conversation, onChange }) {
+  const [temp, setTemp] = useState(conversation.temperature)
+  const [maxTokens, setMaxTokens] = useState(conversation.max_tokens)
+  const [nCtx, setNCtx] = useState(conversation.n_ctx)
+  const [nGpu, setNGpu] = useState(conversation.n_gpu_layers)
+
+  return (
+    <>
+      <div className="settings-row">
+        <div className="settings-label-line">
+          <span className="settings-label mono">temperature</span>
+          <span className="settings-val mono">{Number(temp).toFixed(2)}</span>
+        </div>
+        <input
+          type="range" min="0" max="1.5" step="0.05" value={temp}
+          onChange={(e) => setTemp(parseFloat(e.target.value))}
+          onMouseUp={() => onChange({ temperature: temp })}
+          onKeyUp={() => onChange({ temperature: temp })}
+        />
+        <div className="settings-hint mono">0 = deterministic · higher = more varied</div>
+      </div>
+
+      <div className="settings-row">
+        <div className="settings-label-line">
+          <span className="settings-label mono">max tokens</span>
+          <input
+            className="settings-num mono" type="number" min="64" max="8192" step="64" value={maxTokens}
+            onChange={(e) => setMaxTokens(e.target.value)}
+            onBlur={() => { const v = clampInt(maxTokens, 64, 8192, 1024); setMaxTokens(v); onChange({ max_tokens: v }) }}
+          />
+        </div>
+        <div className="settings-hint mono">longest a reply can get</div>
+      </div>
+
+      <div className="settings-divider" />
+      <div className="settings-note mono">changing these reloads the model</div>
+
+      <div className="settings-row">
+        <div className="settings-label-line">
+          <span className="settings-label mono">context size</span>
+          <input
+            className="settings-num mono" type="number" min="512" max="32768" step="512" value={nCtx}
+            onChange={(e) => setNCtx(e.target.value)}
+            onBlur={() => { const v = clampInt(nCtx, 512, 32768, 8192); setNCtx(v); onChange({ n_ctx: v }) }}
+          />
+        </div>
+        <div className="settings-hint mono">how much history + docs fit at once</div>
+      </div>
+
+      <div className="settings-row">
+        <div className="settings-label-line">
+          <span className="settings-label mono">GPU layers</span>
+          <input
+            className="settings-num mono" type="number" min="-1" max="200" step="1" value={nGpu}
+            onChange={(e) => setNGpu(e.target.value)}
+            onBlur={() => { const v = clampInt(nGpu, -1, 200, -1); setNGpu(v); onChange({ n_gpu_layers: v }) }}
+          />
+        </div>
+        <div className="settings-hint mono">-1 = all on GPU · lower it if a big model won&apos;t fit</div>
+      </div>
+    </>
+  )
+}
+
+function SettingsPanel({ conversation, disabled, onChange }) {
+  const [open, setOpen] = useState(false)
+  const wrapRef = useRef(null)
+
+  useEffect(() => {
+    if (!open) return
+    function onPointerDown(e) {
+      if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false)
+    }
+    function onKeyDown(e) {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', onPointerDown)
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown)
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [open])
+
+  return (
+    <div className="settings-wrap" ref={wrapRef}>
+      <button
+        type="button"
+        className="settings-trigger"
+        disabled={disabled}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        title="Model settings"
+        onClick={() => setOpen((o) => !o)}
+      >
+        <SettingsIcon />
+      </button>
+      {open && conversation && (
+        <div className="settings-panel" role="dialog" aria-label="Model settings">
+          <SettingsFields key={conversation.id} conversation={conversation} onChange={onChange} />
+        </div>
+      )}
+    </div>
+  )
+}
+
 function Composer({ draft, setDraft, onSubmit, sending }) {
   const textareaRef = useRef(null)
 
@@ -144,7 +272,7 @@ function ThinkingIndicator() {
   )
 }
 
-export default function ChatWindow({ conversation, messages, models, onChangeModel, onBrowseModel, onSend, sending }) {
+export default function ChatWindow({ conversation, messages, models, onChangeModel, onBrowseModel, onChangeSettings, onSend, sending }) {
   const [draft, setDraft] = useState('')
   const bottomRef = useRef(null)
 
@@ -173,6 +301,11 @@ export default function ChatWindow({ conversation, messages, models, onChangeMod
           disabled={!conversation}
           onChange={onChangeModel}
           onBrowse={onBrowseModel}
+        />
+        <SettingsPanel
+          conversation={conversation}
+          disabled={!conversation}
+          onChange={onChangeSettings}
         />
       </div>
 

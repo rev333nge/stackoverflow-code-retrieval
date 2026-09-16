@@ -156,6 +156,17 @@ export default function App() {
     )
   }
 
+  // patch is a subset of {temperature, max_tokens, n_ctx, n_gpu_layers}.
+  // Load settings (n_ctx/n_gpu_layers) take effect on the next message, when
+  // the backend reloads the model with them -- nothing to do here but persist.
+  async function handleChangeSettings(patch) {
+    if (!activeConversation) return
+    await api.updateConversation(activeConversation.id, patch)
+    setConversations((prev) =>
+      prev.map((c) => (c.id === activeConversation.id ? { ...c, ...patch } : c)),
+    )
+  }
+
   async function handleSend(text) {
     let conv = activeConversation
     let isFirstMessage = messages.length === 0
@@ -262,6 +273,7 @@ export default function App() {
         models={models}
         onChangeModel={handleChangeModel}
         onBrowseModel={handleBrowseModel}
+        onChangeSettings={handleChangeSettings}
         onSend={handleSend}
         sending={sending}
       />

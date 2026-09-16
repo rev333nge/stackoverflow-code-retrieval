@@ -19,8 +19,8 @@ export const api = {
   getConversations: () => request('/conversations'),
   createConversation: (title, model) =>
     request('/conversations', { method: 'POST', body: JSON.stringify({ title, model }) }),
-  updateConversation: (id, { title, model } = {}) =>
-    request(`/conversations/${id}`, { method: 'PATCH', body: JSON.stringify({ title, model }) }),
+  updateConversation: (id, patch = {}) =>
+    request(`/conversations/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
   deleteConversation: (id) => request(`/conversations/${id}`, { method: 'DELETE' }),
   getMessages: (id) => request(`/conversations/${id}/messages`),
   sendMessage: (id, content) =>
