@@ -8,11 +8,11 @@
                  ├─ OPEN   -> answer grounded in the retrieved docs
                  └─ CLOSED -> drop the (off-topic) docs, answer from model knowledge
 
-Everything is local (Ollama), one model at runtime (gemma). Import AdaptiveRAG
-and call .answer(query) -> dict with the final answer and a decision trace, or
-run this file for an interactive prompt.
+Everything is local (llama.cpp, via llama-cpp-python), one .gguf model loaded
+at a time. Import AdaptiveRAG and call .answer(query) -> dict with the final
+answer and a decision trace, or run this file for an interactive prompt.
 
-    python scripts/adaptive_rag.py [variant]
+    python scripts/adaptive_rag.py [variant] <path-to-model.gguf>
 
 Notes on the constants:
   - GATE_COSINE = 0.70 tuned on 99 in-domain + 8 off-domain queries: 0 false-closes
@@ -23,6 +23,7 @@ Notes on the constants:
 
 from __future__ import annotations
 
+import os
 import sys
 import threading
 from pathlib import Path
@@ -32,7 +33,23 @@ import duckdb
 import faiss
 import lightgbm as lgb
 import numpy as np
-import requests
+import torch
+
+if sys.platform == "win32":
+    # llama-cpp-python's CUDA build (ggml-cuda.dll) dynamically links against
+    # CUDA 12.x runtime DLLs (cudart64_12.dll, cublas64_12.dll,
+    # cublasLt64_12.dll). A machine can easily have a *different* CUDA
+    # Toolkit version installed system-wide (its DLLs are named
+    # differently -- e.g. v13 ships cudart64_13.dll, not _12), in which case
+    # Windows can't resolve ggml-cuda.dll's imports and it fails to load.
+    # torch's own CUDA wheel already bundles exactly the v12 DLLs it needs
+    # (that's how torch itself works without a matching system CUDA install)
+    # -- point the loader at torch's lib/ before llama_cpp imports its DLLs.
+    torch_lib = Path(torch.__file__).resolve().parent / "lib"
+    if torch_lib.is_dir():
+        os.add_dll_directory(str(torch_lib))
+
+from llama_cpp import Llama
 
 from build_ltr_features import RRF_K
 from embedder import load_model, encode_queries
@@ -42,18 +59,9 @@ from tokenizer import tokenize
 PROCESSED = Path("data/processed")
 INDEX_ROOT = Path("data/index")
 
-MODEL = "gemma4-e4b-unsloth-q4kxl"
-OLLAMA_BASE = "http://localhost:11434"
-OLLAMA_URL = f"{OLLAMA_BASE}/api/generate"
+N_CTX = 8192  # fixed at load time -- llama.cpp can't flex context per call like Ollama could
 K = 4
 GATE_COSINE = 0.70
-
-
-def list_models() -> list[str]:
-    """Names of models Ollama currently has pulled and ready to run."""
-    resp = requests.get(f"{OLLAMA_BASE}/api/tags", timeout=5)
-    resp.raise_for_status()
-    return [m["name"] for m in resp.json().get("models", [])]
 
 
 ROUTER_PROMPT = """You are a helpful assistant with a Python StackOverflow search tool available.
@@ -104,8 +112,16 @@ def _format_history(history: list[tuple[str, str]] | None) -> str:
 
 
 class AdaptiveRAG:
-    def __init__(self, variant: str = "a", device: str = "cuda", model: str = MODEL) -> None:
-        self.model = model
+    def __init__(self, variant: str = "a", device: str = "cuda", model: str | None = None) -> None:
+        self.model = model  # absolute path to a .gguf file, chosen by the user
+        self._llm: Llama | None = None
+        self._llm_path: str | None = None
+        # Path of the model currently being (re)loaded into self._llm, or
+        # None the rest of the time -- polled by /api/status so the UI can
+        # show real loading progress instead of guessing client-side whether
+        # a reload is needed (it can't know things like "the backend process
+        # itself just restarted and lost its cached model").
+        self._loading_path: str | None = None
         bm25_dir = INDEX_ROOT / f"bm25_{variant}"
         dense_dir = INDEX_ROOT / f"dense_{variant}"
         model_path = INDEX_ROOT / f"ltr_{variant}" / "model.txt"
@@ -124,31 +140,59 @@ class AdaptiveRAG:
         self.con = duckdb.connect()
         self.corpus = (PROCESSED / "corpus.parquet").as_posix()
         # This instance is shared across FastAPI's threadpool (see rag_service.py).
-        # The Ollama calls in _generate are plain HTTP and safe to run in parallel,
-        # but retrieve() touches state that is not: the single DuckDB connection,
-        # the torch embedder's forward pass, and the FAISS index. Serialize just
-        # that section so concurrent requests don't corrupt each other -- the slow
-        # part (generation) still overlaps freely.
+        # retrieve() touches state that isn't thread-safe (the single DuckDB
+        # connection, the torch embedder's forward pass, the FAISS index) --
+        # serialize just that section. _llm_lock below is separate: it guards
+        # the loaded llama.cpp model itself.
         self._retrieve_lock = threading.Lock()
+        # Unlike Ollama (a server that can run several models via HTTP calls
+        # in parallel), a llama.cpp model loaded in-process can only run one
+        # generation at a time, and swapping which .gguf is loaded must not
+        # race a generation already in flight. One lock covers both.
+        self._llm_lock = threading.Lock()
 
-    # ---- LLM calls (all gemma, local) ----
-    def _generate(self, prompt: str, num_ctx: int = 8192, temperature: float | None = None,
-                  model: str | None = None) -> str:
-        opts = {"num_ctx": num_ctx}
-        if temperature is not None:
-            opts["temperature"] = temperature
+    # ---- LLM calls (all gemma, local via llama.cpp) ----
+    def _load_llm(self, model_path: str) -> Llama:
+        """Return the cached Llama instance for model_path, (re)loading if needed.
+
+        Must be called with _llm_lock held.
+        """
+        if self._llm is not None and self._llm_path == model_path:
+            return self._llm
+        path = Path(model_path)
+        if not path.is_file():
+            raise RuntimeError(f"model file not found: {model_path}")
+        self._loading_path = model_path
         try:
-            resp = requests.post(
-                OLLAMA_URL,
-                json={"model": model or self.model, "prompt": prompt, "stream": False, "options": opts},
-                timeout=300,
-            )
-            resp.raise_for_status()
-            return resp.json()["response"].strip()
-        except requests.exceptions.RequestException as e:
-            raise RuntimeError(f"could not reach Ollama at {OLLAMA_URL} (is `ollama serve` running?): {e}") from e
-        except (ValueError, KeyError) as e:
-            raise RuntimeError(f"Ollama returned an unexpected response (model may still be loading): {e}") from e
+            self._llm = Llama(model_path=str(path), n_ctx=N_CTX, n_gpu_layers=-1, verbose=False)
+        finally:
+            self._loading_path = None
+        self._llm_path = model_path
+        return self._llm
+
+    def loading_status(self) -> str | None:
+        """Path of the model currently loading, or None. Safe to call from
+        another thread while _generate() holds _llm_lock -- this is a plain
+        attribute read, and the GIL makes that atomic."""
+        return self._loading_path
+
+    def _generate(self, prompt: str, max_tokens: int = 1024, temperature: float | None = None,
+                  model: str | None = None) -> str:
+        model_path = model or self.model
+        if not model_path:
+            raise RuntimeError("no model selected -- pick a .gguf file first")
+        with self._llm_lock:
+            try:
+                llm = self._load_llm(model_path)
+                out = llm.create_completion(
+                    prompt, max_tokens=max_tokens,
+                    temperature=0.7 if temperature is None else temperature,
+                )
+            except RuntimeError:
+                raise
+            except Exception as e:
+                raise RuntimeError(f"local generation failed ({Path(model_path).name}): {e}") from e
+        return out["choices"][0]["text"].strip()
 
     def set_model(self, model: str) -> None:
         self.model = model
@@ -157,7 +201,7 @@ class AdaptiveRAG:
               model: str | None = None) -> str:
         """Return 'SEARCH' or 'ANSWER' (defaults to ANSWER if unclear)."""
         prompt = ROUTER_PROMPT.format(history=_format_history(history), q=query)
-        raw = self._generate(prompt, num_ctx=4096, temperature=0, model=model).upper()
+        raw = self._generate(prompt, max_tokens=10, temperature=0, model=model).upper()
         return "SEARCH" if "SEARCH" in raw else "ANSWER"
 
     # ---- retrieval (BM25 + dense -> LTR rerank) ----
@@ -251,8 +295,11 @@ class AdaptiveRAG:
 
 def main() -> None:
     variant = sys.argv[1].lower() if len(sys.argv) > 1 else "a"
+    if len(sys.argv) < 3:
+        raise SystemExit(f"usage: python {sys.argv[0]} [variant] <path-to-model.gguf>")
+    model = sys.argv[2]
     print("loading indexes + model ...")
-    rag = AdaptiveRAG(variant)
+    rag = AdaptiveRAG(variant, model=model)
     print(f"ready (variant {variant}, gate>={GATE_COSINE}). Type a question, empty line to quit.\n")
     while True:
         try:

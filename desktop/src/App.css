@@ -399,6 +399,13 @@
   flex-shrink: 0;
 }
 
+.model-option-browse {
+  margin-top: 4px;
+  border-top: 1px solid var(--border);
+  border-radius: 0;
+  color: var(--text-muted, var(--text));
+}
+
 @media (prefers-reduced-motion: no-preference) {
   .model-dropdown-panel {
     animation: dropdownIn 0.14s cubic-bezier(0.16, 1, 0.3, 1);
@@ -514,12 +521,22 @@
   text-transform: uppercase;
 }
 
-.message-label.user {
-  color: var(--muted);
-}
-
 .message-label.assistant {
   color: var(--accent);
+}
+
+/* User turn: push the bubble to the right edge of the centered column. */
+.message-user {
+  align-items: flex-end;
+}
+
+.message-user .message-body {
+  background: var(--user-bubble);
+  color: var(--text);
+  padding: 9px 14px;
+  border-radius: 15px 15px 4px 15px;
+  max-width: 78%;
+  width: fit-content;
 }
 
 .message-body {
@@ -823,4 +840,72 @@
   font-size: 11.5px;
   color: var(--muted);
   text-align: center;
+}
+
+/* Top-of-window bar shown while the backend is (re)loading a .gguf model --
+   a slow, blocking step the user should see progress on, not mistake for a
+   frozen app. */
+.model-load-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1000;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.model-load-track {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 5px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+/* Fills left-to-right. We get no real progress callback from llama.cpp's
+   blocking load, so this eases quickly at first then crawls toward 90% --
+   reading as genuine progress without ever falsely hitting 100%. The base
+   width is 90% so that when the animation is removed (the .done snap) it
+   reverts to 90%, not 0, avoiding a backwards jump. */
+.model-load-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 90%;
+  background: var(--accent);
+  animation: modelLoadFill 9s cubic-bezier(0.12, 0.8, 0.1, 1) forwards;
+}
+
+/* Load finished: snap to full width, then the bar unmounts a moment later. */
+.model-load-fill.done {
+  animation: none;
+  width: 100%;
+  transition: width 0.25s ease-out;
+}
+
+.model-load-label {
+  margin-top: 14px;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 11.5px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+}
+
+@keyframes modelLoadFill {
+  0% { width: 0; }
+  100% { width: 90%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .model-load-fill {
+    animation: none;
+  }
 }

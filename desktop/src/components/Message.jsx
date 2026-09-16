@@ -89,11 +89,14 @@ function Sources({ sources }) {
 
 export default function Message({ message }) {
   const isUser = message.role === 'user'
+  // User turns are a compact right-aligned bubble (the position identifies the
+  // speaker, so no label). Assistant turns stay full-width on the left, keeping
+  // room for code blocks, the trace badge, and the sources panel.
   return (
-    <div className="message">
-      <div className={`message-label mono ${isUser ? 'user' : 'assistant'}`}>
-        &rarr; {isUser ? 'USER' : 'ASSISTANT'}
-      </div>
+    <div className={`message ${isUser ? 'message-user' : 'message-assistant'}`}>
+      {!isUser && (
+        <div className="message-label mono assistant">&rarr; ASSISTANT</div>
+      )}
       <div className={message.isError ? 'message-body message-error' : 'message-body'}>
         <ReactMarkdown>{message.content}</ReactMarkdown>
       </div>

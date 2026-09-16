@@ -14,6 +14,7 @@ async function request(path, options) {
 }
 
 export const api = {
+  getStatus: () => request('/status'),
   getModels: () => request('/models'),
   getConversations: () => request('/conversations'),
   createConversation: (title, model) =>

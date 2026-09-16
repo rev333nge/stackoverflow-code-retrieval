@@ -78,9 +78,19 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/api/status")
+def get_status():
+    # Polled by the UI while a message is in flight, to distinguish "loading
+    # a .gguf into VRAM" from "generating a reply" -- runs on a different
+    # threadpool thread than a concurrent POST /messages, so this doesn't
+    # block behind it (see RagService.loading_status's docstring on why
+    # reading this while it's being set elsewhere is safe).
+    return {"loading_model": service.loading_status()}
+
+
 @app.get("/api/models")
 def get_models():
-    return service.available_models()
+    return db.list_recent_models(con)
 
 
 @app.get("/api/conversations")

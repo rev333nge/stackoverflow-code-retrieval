@@ -2,7 +2,7 @@
 // lifecycle. The backend (FastAPI + AdaptiveRAG) is spawned as a child
 // process bound to 127.0.0.1 -- nothing here is reachable from the network.
 
-import { app, BrowserWindow } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import { spawn, spawnSync } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -33,6 +33,19 @@ function startBackend() {
     backendProcess = null
   })
 }
+
+// Exposed to the renderer via preload.cjs. Opens a native file picker rather
+// than the FastAPI backend doing it -- a headless Python process can't show
+// OS dialogs, only the Electron main process can.
+ipcMain.handle('pick-gguf-model', async () => {
+  const result = await dialog.showOpenDialog({
+    title: 'Choose a local model',
+    properties: ['openFile'],
+    filters: [{ name: 'GGUF models', extensions: ['gguf'] }],
+  })
+  if (result.canceled || result.filePaths.length === 0) return null
+  return result.filePaths[0]
+})
 
 function stopBackend() {
   const proc = backendProcess
@@ -83,6 +96,9 @@ async function createWindow() {
     title: 'StackOverflow Retrieval',
     webPreferences: {
       contextIsolation: true,
+      // .cjs, not .js: this package is "type": "module", but Electron's
+      // preload loader wants CommonJS (require), not an ES module.
+      preload: path.join(__dirname, 'preload.cjs'),
     },
   })
 

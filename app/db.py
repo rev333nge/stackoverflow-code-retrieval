@@ -108,6 +108,23 @@ def set_conversation_model(con: sqlite3.Connection, conversation_id: int, model:
 
 
 @_synchronized
+def list_recent_models(con: sqlite3.Connection, limit: int = 20) -> list[str]:
+    """Distinct model paths used across conversations, most-recently-used first.
+
+    Stands in for Ollama's "list of pulled models" -- there's no external
+    registry of .gguf files anymore, so the model picker offers whatever the
+    user has actually browsed to and used before, plus a "browse" action for
+    anything new (see desktop's model dropdown).
+    """
+    rows = con.execute(
+        """SELECT model, MAX(created_at) AS last_used FROM conversations
+           GROUP BY model ORDER BY last_used DESC LIMIT ?""",
+        (limit,),
+    ).fetchall()
+    return [r["model"] for r in rows]
+
+
+@_synchronized
 def delete_conversation(con: sqlite3.Connection, conversation_id: int) -> None:
     con.execute("DELETE FROM messages WHERE conversation_id = ?", (conversation_id,))
     con.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))

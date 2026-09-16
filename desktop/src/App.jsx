@@ -17,6 +17,32 @@ export default function App() {
   const [sending, setSending] = useState(false)
   const [error, setError] = useState(null)
   const [isDark, setIsDark] = useState(() => localStorage.getItem('theme') === 'dark')
+  // Path of the .gguf the backend is currently loading (drives the top
+  // loading bar), or null. Set from real backend state -- while a message is
+  // in flight, we poll GET /api/status, which reports whichever model the
+  // backend is loading into VRAM right now. This is authoritative (it knows
+  // things the client can't guess, like the backend process having just
+  // restarted and lost its cached model), unlike the earlier client-side
+  // heuristic it replaces.
+  const [loadingModelName, setLoadingModelName] = useState(null)
+  // When loading ends, briefly hold the bar at 100% ("ready") so it reads as
+  // finished rather than vanishing mid-fill. Holds the just-loaded model name
+  // during that snap, or null. prevLoadingRef tracks the previous value so we
+  // can detect the loading -> not-loading transition.
+  const [barFinishingName, setBarFinishingName] = useState(null)
+  const prevLoadingRef = useRef(null)
+
+  useEffect(() => {
+    const prev = prevLoadingRef.current
+    prevLoadingRef.current = loadingModelName
+    // loading -> not loading: model finished loading (generation begins).
+    // Flash the bar to 100% for a moment before it disappears.
+    if (prev && !loadingModelName) {
+      setBarFinishingName(prev)
+      const t = setTimeout(() => setBarFinishingName(null), 450)
+      return () => clearTimeout(t)
+    }
+  }, [loadingModelName])
 
   useEffect(() => {
     document.documentElement.dataset.theme = isDark ? 'dark' : 'light'
@@ -85,11 +111,31 @@ export default function App() {
 
   const activeConversation = conversations.find((c) => c.id === activeId) ?? null
 
+  // Opens the native "choose a .gguf file" dialog (implemented in Electron's
+  // main process -- see electron/preload.cjs). Returns the picked absolute
+  // path, or null if the user cancelled or this isn't running inside Electron.
+  async function pickModel() {
+    if (!window.electronAPI?.pickGgufModel) {
+      setError('Model picker unavailable outside the desktop app.')
+      return null
+    }
+    const picked = await window.electronAPI.pickGgufModel()
+    if (picked) {
+      setModels((prev) => (prev.includes(picked) ? prev : [picked, ...prev]))
+    }
+    return picked
+  }
+
+  async function handleBrowseModel() {
+    const model = await pickModel()
+    if (model) await handleChangeModel(model)
+  }
+
   async function handleNew() {
-    const model = activeConversation?.model ?? models[0]
+    let model = activeConversation?.model ?? models[0]
     if (!model) {
-      setError('No local models found. Make sure Ollama is running and has at least one model pulled.')
-      return
+      model = await pickModel()
+      if (!model) return
     }
     const conv = await api.createConversation(DEFAULT_TITLE, model)
     setConversations((prev) => [conv, ...prev])
@@ -114,10 +160,10 @@ export default function App() {
     let conv = activeConversation
     let isFirstMessage = messages.length === 0
     if (!conv) {
-      const model = models[0]
+      let model = models[0]
       if (!model) {
-        setError('No local models found. Make sure Ollama is running and has at least one model pulled.')
-        return
+        model = await pickModel()
+        if (!model) return
       }
       conv = await api.createConversation(DEFAULT_TITLE, model)
       isFirstMessage = true
@@ -129,6 +175,18 @@ export default function App() {
     const convId = conv.id
     setMessages((prev) => [...prev, { id: `local-${Date.now()}`, role: 'user', content: text }])
     setSending(true)
+    // Poll the backend's real loading state for as long as this send is in
+    // flight: if the request blocks on a slow .gguf load, /api/status reports
+    // which model, and the top bar shows it; once generation starts (or the
+    // model was already warm) it reports null and the bar clears.
+    const poll = setInterval(async () => {
+      try {
+        const { loading_model: loadingModel } = await api.getStatus()
+        setLoadingModelName(loadingModel)
+      } catch {
+        // status endpoint momentarily unavailable -- ignore, try next tick
+      }
+    }, 400)
     try {
       const reply = await api.sendMessage(convId, text)
       // The user may have switched to a different conversation while this
@@ -151,6 +209,8 @@ export default function App() {
         ])
       }
     } finally {
+      clearInterval(poll)
+      setLoadingModelName(null)
       setSending(false)
     }
   }
@@ -159,7 +219,7 @@ export default function App() {
     if (backendFailed) {
       return (
         <div className="loading-screen">
-          <p>Couldn&apos;t reach the backend. Make sure Ollama is running, then try again.</p>
+          <p>Couldn&apos;t reach the backend. Try again.</p>
           <button className="btn-retry mono" onClick={() => { setBackendFailed(false); setRetryTick((n) => n + 1) }}>retry</button>
         </div>
       )
@@ -169,6 +229,18 @@ export default function App() {
 
   return (
     <div className="app">
+      {(loadingModelName || barFinishingName) && (
+        <div className="model-load-bar" role="status" aria-label={`loading model ${loadingModelName || barFinishingName}`}>
+          <div className="model-load-track">
+            <div className={`model-load-fill${barFinishingName ? ' done' : ''}`} />
+          </div>
+          <span className="model-load-label mono">
+            {barFinishingName
+              ? 'ready'
+              : `loading ${loadingModelName.split(/[\\/]/).pop()}…`}
+          </span>
+        </div>
+      )}
       {error && (
         <div className="error-banner">
           {error}
@@ -189,6 +261,7 @@ export default function App() {
         messages={messages}
         models={models}
         onChangeModel={handleChangeModel}
+        onBrowseModel={handleBrowseModel}
         onSend={handleSend}
         sending={sending}
       />

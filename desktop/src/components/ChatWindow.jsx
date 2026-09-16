@@ -7,6 +7,13 @@ const SUGGESTIONS = [
   'compare two approaches',
 ]
 
+// Models are now absolute filesystem paths to a .gguf file (there's no
+// Ollama registry giving us a short name anymore), so display just the
+// filename while still passing the full path around as the value.
+function basename(modelPath) {
+  return modelPath.split(/[\\/]/).pop()
+}
+
 function Composer({ draft, setDraft, onSubmit, sending }) {
   const textareaRef = useRef(null)
 
@@ -53,7 +60,7 @@ function Composer({ draft, setDraft, onSubmit, sending }) {
   )
 }
 
-function ModelDropdown({ activeModel, modelOptions, models, disabled, onChange }) {
+function ModelDropdown({ activeModel, modelOptions, models, disabled, onChange, onBrowse }) {
   const [open, setOpen] = useState(false)
   const wrapRef = useRef(null)
 
@@ -84,7 +91,7 @@ function ModelDropdown({ activeModel, modelOptions, models, disabled, onChange }
         onClick={() => setOpen((o) => !o)}
       >
         <span className="model-dot" />
-        <span className="model-name mono">{activeModel}</span>
+        <span className="model-name mono">{activeModel ? basename(activeModel) : 'no model'}</span>
         <span className={`model-chevron mono${open ? ' open' : ''}`}>&#9662;</span>
       </button>
 
@@ -103,11 +110,21 @@ function ModelDropdown({ activeModel, modelOptions, models, disabled, onChange }
               }}
             >
               <span className="model-option-name mono">
-                {models.includes(m) ? m : `${m} (not installed)`}
+                {models.includes(m) ? basename(m) : `${basename(m)} (not recently used)`}
               </span>
               {m === activeModel && <span className="model-option-check">&#10003;</span>}
             </button>
           ))}
+          <button
+            type="button"
+            className="model-option model-option-browse"
+            onClick={() => {
+              setOpen(false)
+              onBrowse()
+            }}
+          >
+            <span className="model-option-name mono">+ browse for a .gguf file&hellip;</span>
+          </button>
         </div>
       )}
     </div>
@@ -127,7 +144,7 @@ function ThinkingIndicator() {
   )
 }
 
-export default function ChatWindow({ conversation, messages, models, onChangeModel, onSend, sending }) {
+export default function ChatWindow({ conversation, messages, models, onChangeModel, onBrowseModel, onSend, sending }) {
   const [draft, setDraft] = useState('')
   const bottomRef = useRef(null)
 
@@ -142,7 +159,7 @@ export default function ChatWindow({ conversation, messages, models, onChangeMod
     onSend(text)
   }
 
-  const activeModel = conversation?.model ?? models[0] ?? 'no model'
+  const activeModel = conversation?.model ?? models[0] ?? null
   const modelInstalled = conversation ? models.includes(conversation.model) : true
   const modelOptions = conversation && !modelInstalled ? [conversation.model, ...models] : models
 
@@ -155,13 +172,14 @@ export default function ChatWindow({ conversation, messages, models, onChangeMod
           models={models}
           disabled={!conversation}
           onChange={onChangeModel}
+          onBrowse={onBrowseModel}
         />
       </div>
 
       {!conversation ? (
         <div className="empty-state">
           <div className="empty-sq" />
-          <div className="empty-caption mono">ready to run &middot; {activeModel}</div>
+          <div className="empty-caption mono">ready to run &middot; {activeModel ? basename(activeModel) : 'no model yet'}</div>
           <div className="composer-wrap">
             <Composer draft={draft} setDraft={setDraft} onSubmit={handleSubmit} sending={sending} />
             <div className="suggestions">
@@ -186,7 +204,7 @@ export default function ChatWindow({ conversation, messages, models, onChangeMod
           <div className="composer-dock">
             <Composer draft={draft} setDraft={setDraft} onSubmit={handleSubmit} sending={sending} />
             <div className="composer-caption mono">
-              {activeModel} &middot; local inference via Ollama, no data leaves this machine
+              {activeModel ? basename(activeModel) : 'no model'} &middot; local inference via llama.cpp, no data leaves this machine
             </div>
           </div>
         </>
