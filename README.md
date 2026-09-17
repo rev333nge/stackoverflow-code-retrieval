@@ -1,4 +1,4 @@
-# stackoverflow-retrieval
+# stackoverflow-code-retrieval
 
 A code-search engine over Stack Overflow Q&A, built up in stages from a plain BM25 baseline to a hybrid dense/sparse retriever with a learned reranker and a grounded RAG layer on top. Every stage is benchmarked against the one before it on a held-out, time-based test split, using NDCG@10, MRR@10, and Recall@100 against real Stack Overflow signals (accepted answers, scores) as ground truth.
 
