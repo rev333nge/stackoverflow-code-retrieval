@@ -26,7 +26,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
-from adaptive_rag import AdaptiveRAG  # noqa: E402
+from adaptive_rag import AdaptiveRAG, model_max_context  # noqa: E402
 
 
 class RagService:
@@ -44,3 +44,7 @@ class RagService:
         """Path of the .gguf currently being loaded, or None -- polled by
         /api/status while a message is in flight, for the UI's loading bar."""
         return self.rag.loading_status()
+
+    def model_max_context(self, model_path: str) -> int:
+        """Max context the given .gguf supports -- bounds the n_ctx slider."""
+        return model_max_context(model_path)

@@ -93,7 +93,7 @@ async function createWindow() {
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
-    title: 'StackOverflow Retrieval',
+    title: 'PY Retriever',
     webPreferences: {
       contextIsolation: true,
       // .cjs, not .js: this package is "type": "module", but Electron's

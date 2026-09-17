@@ -53,13 +53,13 @@ function Sources({ sources }) {
 
       <div className={`sources-collapse${open ? ' open' : ''}`}>
         <div className="sources-collapse-inner">
-          <ol className="source-list" key={open ? 'open' : 'closed'}>
+          <ol className="source-list">
             {sources.map((raw, i) => {
               // Conversations saved before sources carried links have plain
               // title strings -- show those without a broken/empty href.
               const s = typeof raw === 'string' ? { title: raw, url: null } : raw
               return (
-                <li key={s.url ?? i} className="source-row" style={{ '--stagger': i }}>
+                <li key={s.url ?? i} className="source-row">
                   <span className="source-index mono">{i + 1}</span>
                   {s.url ? (
                     <a

@@ -74,7 +74,8 @@ CREATE TABLE IF NOT EXISTS messages (
     top_cosine      REAL,
     gate            TEXT,
     used_docs       INTEGER,
-    sources_json    TEXT
+    sources_json    TEXT,
+    context_used    INTEGER
 );
 """
 
@@ -86,6 +87,7 @@ def connect(check_same_thread: bool = True) -> sqlite3.Connection:
     con.execute("PRAGMA foreign_keys = ON")
     con.executescript(SCHEMA)
     _migrate_settings_columns(con)
+    _migrate_columns(con, "messages", {"context_used": "INTEGER"})
     return con
 
 
@@ -94,16 +96,20 @@ def _migrate_settings_columns(con: sqlite3.Connection) -> None:
     existed. CREATE TABLE IF NOT EXISTS won't alter an existing table, so a
     database from an earlier version is missing them -- add each absent one
     with the same default the fresh schema uses."""
-    existing = {r["name"] for r in con.execute("PRAGMA table_info(conversations)")}
-    decls = {
+    _migrate_columns(con, "conversations", {
         "temperature": "REAL NOT NULL DEFAULT 0.7",
         "max_tokens": "INTEGER NOT NULL DEFAULT 1024",
         "n_ctx": "INTEGER NOT NULL DEFAULT 8192",
         "n_gpu_layers": "INTEGER NOT NULL DEFAULT -1",
-    }
+    })
+
+
+def _migrate_columns(con: sqlite3.Connection, table: str, decls: dict[str, str]) -> None:
+    """Add any of `decls` (column -> SQL type/default) missing from `table`."""
+    existing = {r["name"] for r in con.execute(f"PRAGMA table_info({table})")}
     for col, decl in decls.items():
         if col not in existing:
-            con.execute(f"ALTER TABLE conversations ADD COLUMN {col} {decl}")
+            con.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
     con.commit()
 
 
@@ -209,11 +215,12 @@ def add_message(
     gate: str | None = None,
     used_docs: bool | None = None,
     sources: list[dict] | None = None,
+    context_used: int | None = None,
 ) -> int:
     cur = con.execute(
         """INSERT INTO messages
-           (conversation_id, role, content, created_at, route, top_cosine, gate, used_docs, sources_json)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           (conversation_id, role, content, created_at, route, top_cosine, gate, used_docs, sources_json, context_used)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             conversation_id,
             role,
@@ -224,6 +231,7 @@ def add_message(
             gate,
             None if used_docs is None else int(used_docs),
             None if sources is None else json.dumps(sources),
+            context_used,
         ),
     )
     con.commit()
@@ -251,14 +259,3 @@ def list_messages(con: sqlite3.Connection, conversation_id: int) -> list[dict]:
         (conversation_id,),
     ).fetchall()
     return [_row_to_message(r) for r in rows]
-
-
-@_synchronized
-def list_recent_messages(con: sqlite3.Connection, conversation_id: int, limit: int = 6) -> list[dict]:
-    """Last `limit` messages, oldest first -- for threading into RAG history
-    without fetching and re-decoding a whole (potentially long) conversation."""
-    rows = con.execute(
-        "SELECT * FROM messages WHERE conversation_id = ? ORDER BY id DESC LIMIT ?",
-        (conversation_id, limit),
-    ).fetchall()
-    return [_row_to_message(r) for r in reversed(rows)]

@@ -4,7 +4,6 @@
 .btn-retry,
 .app,
 .sidebar,
-.wordmark-sq,
 .new-chat-btn,
 .search-input,
 .conversation-item,
@@ -17,7 +16,6 @@
 .model-select-trigger,
 .model-dropdown-panel,
 .model-option,
-.empty-sq,
 .suggestion-chip,
 .message-body pre,
 .sources-toggle,
@@ -107,10 +105,10 @@
   letter-spacing: 0.14em;
 }
 
-.wordmark-sq {
-  width: 18px;
-  height: 18px;
-  background: var(--accent);
+.wordmark-logo {
+  width: 22px;
+  height: 22px;
+  object-fit: contain;
   flex-shrink: 0;
 }
 
@@ -423,6 +421,27 @@
   }
 }
 
+/* ---- context ring + topbar right group ---- */
+
+.chat-topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.context-ring {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  cursor: default;
+}
+
+.context-ring-label {
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
 /* ---- model settings ---- */
 
 .settings-wrap {
@@ -558,10 +577,10 @@
   padding: 44px;
 }
 
-.empty-sq {
-  width: 32px;
-  height: 32px;
-  background: var(--accent);
+.empty-logo {
+  width: 64px;
+  height: 64px;
+  object-fit: contain;
 }
 
 .empty-caption {
@@ -823,24 +842,6 @@
 .source-row {
   display: flex;
   align-items: stretch;
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  .source-row {
-    animation: sourceRowIn 0.22s ease both;
-    animation-delay: calc(var(--stagger, 0) * 40ms);
-  }
-}
-
-@keyframes sourceRowIn {
-  from {
-    opacity: 0;
-    transform: translateY(-3px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
 }
 
 .source-index {

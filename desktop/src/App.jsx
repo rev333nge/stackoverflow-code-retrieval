@@ -17,6 +17,10 @@ export default function App() {
   const [sending, setSending] = useState(false)
   const [error, setError] = useState(null)
   const [isDark, setIsDark] = useState(() => localStorage.getItem('theme') === 'dark')
+  // Max context each model supports, keyed by .gguf path (from the backend's
+  // GGUF metadata read). Bounds the n_ctx slider so you can't ask for more
+  // context than the model was trained for.
+  const [modelMaxByPath, setModelMaxByPath] = useState({})
   // Path of the .gguf the backend is currently loading (drives the top
   // loading bar), or null. Set from real backend state -- while a message is
   // in flight, we poll GET /api/status, which reports whichever model the
@@ -110,6 +114,19 @@ export default function App() {
   }, [activeId])
 
   const activeConversation = conversations.find((c) => c.id === activeId) ?? null
+  const activeModel = activeConversation?.model ?? null
+
+  // Learn the active model's max context once (cached by path), so the n_ctx
+  // slider knows its ceiling. Reads GGUF metadata on the backend -- cheap, no
+  // weights loaded.
+  useEffect(() => {
+    if (!activeModel || modelMaxByPath[activeModel] != null) return
+    let cancelled = false
+    api.getModelInfo(activeModel)
+      .then((info) => { if (!cancelled) setModelMaxByPath((prev) => ({ ...prev, [activeModel]: info.max_context })) })
+      .catch(() => { /* leave unset; slider falls back to a default ceiling */ })
+    return () => { cancelled = true }
+  }, [activeModel, modelMaxByPath])
 
   // Opens the native "choose a .gguf file" dialog (implemented in Electron's
   // main process -- see electron/preload.cjs). Returns the picked absolute
@@ -271,6 +288,7 @@ export default function App() {
         conversation={activeConversation}
         messages={messages}
         models={models}
+        modelMax={activeModel ? modelMaxByPath[activeModel] : null}
         onChangeModel={handleChangeModel}
         onBrowseModel={handleBrowseModel}
         onChangeSettings={handleChangeSettings}

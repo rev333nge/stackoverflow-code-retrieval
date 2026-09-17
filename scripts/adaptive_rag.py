@@ -59,9 +59,27 @@ from tokenizer import tokenize
 PROCESSED = Path("data/processed")
 INDEX_ROOT = Path("data/index")
 
-N_CTX = 8192  # fixed at load time -- llama.cpp can't flex context per call like Ollama could
+N_CTX = 8192  # default context; the real ceiling per model comes from model_max_context()
 K = 4
 GATE_COSINE = 0.70
+
+_max_ctx_cache: dict[str, int] = {}
+
+
+def model_max_context(model_path: str) -> int:
+    """The model's max trained context length, read from its GGUF metadata
+    (the `<arch>.context_length` key). Uses a vocab-only load, so it reads the
+    header without pulling weights onto the GPU -- cheap enough to call when
+    the user picks a model, to bound the n_ctx slider. Falls back to N_CTX if
+    the metadata doesn't declare it. Cached per path."""
+    if model_path in _max_ctx_cache:
+        return _max_ctx_cache[model_path]
+    if not Path(model_path).is_file():
+        raise RuntimeError(f"model file not found: {model_path}")
+    llm = Llama(model_path=model_path, vocab_only=True, verbose=False)
+    ctx = next((int(v) for k, v in llm.metadata.items() if k.endswith(".context_length")), N_CTX)
+    _max_ctx_cache[model_path] = ctx
+    return ctx
 
 
 ROUTER_PROMPT = """You are a helpful assistant with a Python StackOverflow search tool available.
@@ -184,7 +202,9 @@ class AdaptiveRAG:
 
     def _generate(self, prompt: str, *, max_tokens: int, temperature: float,
                   model: str | None = None, n_ctx: int = N_CTX,
-                  n_gpu_layers: int = -1) -> str:
+                  n_gpu_layers: int = -1) -> tuple[str, dict]:
+        """Returns (text, usage) where usage has prompt_tokens/completion_tokens
+        -- prompt_tokens is what the context-usage gauge reports."""
         model_path = model or self.model
         if not model_path:
             raise RuntimeError("no model selected -- pick a .gguf file first")
@@ -196,7 +216,33 @@ class AdaptiveRAG:
                 raise
             except Exception as e:
                 raise RuntimeError(f"local generation failed ({Path(model_path).name}): {e}") from e
-        return out["choices"][0]["text"].strip()
+        return out["choices"][0]["text"].strip(), out.get("usage") or {}
+
+    def _fit_history(self, history, skeleton: str, reply_reserve: int,
+                     model: str | None, n_ctx: int, n_gpu_layers: int):
+        """The most recent turns that fit in the context alongside `skeleton`
+        (the prompt with an empty history) and room for a reply of
+        `reply_reserve` tokens. Tokenized with the actual model so the budget
+        is exact -- this is what makes n_ctx mean 'how much the chat remembers'
+        instead of a fixed message count.
+        """
+        if not history:
+            return []
+        margin = 48  # covers the history block's wrapper markers + BOS slack
+        with self._llm_lock:
+            llm = self._load_llm(model or self.model, n_ctx, n_gpu_layers)
+            skel_tokens = len(llm.tokenize(skeleton.encode("utf-8"), add_bos=True))
+            budget = n_ctx - reply_reserve - margin - skel_tokens
+            kept, used = [], 0
+            for role, content in reversed(history):  # newest first
+                line = f"{'User' if role == 'user' else 'Assistant'}: {content}\n"
+                n = len(llm.tokenize(line.encode("utf-8"), add_bos=False))
+                if used + n > budget:
+                    break
+                used += n
+                kept.append((role, content))
+        kept.reverse()
+        return kept
 
     def set_model(self, model: str) -> None:
         self.model = model
@@ -209,10 +255,12 @@ class AdaptiveRAG:
         facing answer, so the user's temperature setting deliberately doesn't
         apply here. The load params (n_ctx/n_gpu_layers) still must match the
         answer step's, since it's the same cached model instance."""
-        prompt = ROUTER_PROMPT.format(history=_format_history(history), q=query)
-        raw = self._generate(prompt, max_tokens=10, temperature=0, model=model,
-                             n_ctx=n_ctx, n_gpu_layers=n_gpu_layers).upper()
-        return "SEARCH" if "SEARCH" in raw else "ANSWER"
+        skeleton = ROUTER_PROMPT.format(history="", q=query)
+        hist = self._fit_history(history, skeleton, 16, model, n_ctx, n_gpu_layers)
+        prompt = ROUTER_PROMPT.format(history=_format_history(hist), q=query)
+        raw, _ = self._generate(prompt, max_tokens=10, temperature=0, model=model,
+                                n_ctx=n_ctx, n_gpu_layers=n_gpu_layers)
+        return "SEARCH" if "SEARCH" in raw.upper() else "ANSWER"
 
     # ---- retrieval (BM25 + dense -> LTR rerank) ----
     @staticmethod
@@ -293,13 +341,15 @@ class AdaptiveRAG:
         n_gpu_layers = -1 if n_gpu_layers is None else n_gpu_layers
         load = {"n_ctx": n_ctx, "n_gpu_layers": n_gpu_layers}
 
-        hist = _format_history(history)
         route = self.route(query, history, model=model, **load)
         if route == "ANSWER":
-            text = self._generate(ANSWER_ALONE_PROMPT.format(history=hist, q=query),
-                                   max_tokens=max_tokens, temperature=temperature, model=model, **load)
+            skeleton = ANSWER_ALONE_PROMPT.format(history="", q=query)
+            hist = self._fit_history(history, skeleton, max_tokens, model, **load)
+            text, usage = self._generate(ANSWER_ALONE_PROMPT.format(history=_format_history(hist), q=query),
+                                         max_tokens=max_tokens, temperature=temperature, model=model, **load)
             return {"route": "ANSWER", "searched": False, "top_cosine": None,
-                    "gate": None, "used_docs": False, "retrieved": [], "answer": text}
+                    "gate": None, "used_docs": False, "retrieved": [], "answer": text,
+                    "context_used": usage.get("prompt_tokens"), "context_total": n_ctx}
 
         top_cosine, docs = self.retrieve(query)
         gate_open = top_cosine >= GATE_COSINE
@@ -309,15 +359,21 @@ class AdaptiveRAG:
         retrieved = [{"title": t, "url": f"https://stackoverflow.com/a/{d}"} for d, t, _ in docs]
         if gate_open:
             context = "\n\n".join(f"[{i}] {t}\n{b}" for i, (_, t, b) in enumerate(docs, 1))
-            text = self._generate(ANSWER_WITH_DOCS_PROMPT.format(history=hist, q=query, context=context),
-                                   max_tokens=max_tokens, temperature=temperature, model=model, **load)
+            skeleton = ANSWER_WITH_DOCS_PROMPT.format(history="", q=query, context=context)
+            hist = self._fit_history(history, skeleton, max_tokens, model, **load)
+            text, usage = self._generate(ANSWER_WITH_DOCS_PROMPT.format(history=_format_history(hist), q=query, context=context),
+                                         max_tokens=max_tokens, temperature=temperature, model=model, **load)
             return {"route": "SEARCH", "searched": True, "top_cosine": top_cosine,
-                    "gate": "open", "used_docs": True, "retrieved": retrieved, "answer": text}
+                    "gate": "open", "used_docs": True, "retrieved": retrieved, "answer": text,
+                    "context_used": usage.get("prompt_tokens"), "context_total": n_ctx}
         # gate closed: retrieval too weak -> answer from model knowledge instead of junk
-        text = self._generate(ANSWER_ALONE_PROMPT.format(history=hist, q=query),
-                               max_tokens=max_tokens, temperature=temperature, model=model, **load)
+        skeleton = ANSWER_ALONE_PROMPT.format(history="", q=query)
+        hist = self._fit_history(history, skeleton, max_tokens, model, **load)
+        text, usage = self._generate(ANSWER_ALONE_PROMPT.format(history=_format_history(hist), q=query),
+                                     max_tokens=max_tokens, temperature=temperature, model=model, **load)
         return {"route": "SEARCH", "searched": True, "top_cosine": top_cosine,
-                "gate": "closed", "used_docs": False, "retrieved": retrieved, "answer": text}
+                "gate": "closed", "used_docs": False, "retrieved": retrieved, "answer": text,
+                "context_used": usage.get("prompt_tokens"), "context_total": n_ctx}
 
 
 def main() -> None:

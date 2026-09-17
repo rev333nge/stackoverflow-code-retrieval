@@ -97,6 +97,17 @@ def get_models():
     return db.list_recent_models(con)
 
 
+@app.get("/api/model-info")
+def model_info(path: str):
+    # Called when the user picks a model, to learn its max context (from the
+    # GGUF metadata) so the n_ctx slider's ceiling matches what the model
+    # actually supports.
+    try:
+        return {"max_context": service.model_max_context(path)}
+    except Exception as e:
+        raise HTTPException(400, str(e))
+
+
 @app.get("/api/conversations")
 def get_conversations():
     return [dict(r) for r in db.list_conversations(con)]
@@ -142,8 +153,10 @@ def post_message(conversation_id: int, body: NewMessage):
     if conv is None:
         raise HTTPException(404, "conversation not found")
 
-    # last few turns only, for conversational continuity, not full replay
-    history = [(m["role"], m["content"]) for m in db.list_recent_messages(con, conversation_id)]
+    # Full prior history; AdaptiveRAG trims it to as many recent turns as fit
+    # in the conversation's n_ctx budget (tokenized with the actual model),
+    # so context depth scales with n_ctx instead of a fixed message count.
+    history = [(m["role"], m["content"]) for m in db.list_messages(con, conversation_id)]
     user_msg_id = db.add_message(con, conversation_id, "user", body.content)
 
     try:
@@ -168,6 +181,7 @@ def post_message(conversation_id: int, body: NewMessage):
         con, conversation_id, "assistant", result["answer"],
         route=result["route"], top_cosine=result["top_cosine"],
         gate=result["gate"], used_docs=result["used_docs"], sources=sources,
+        context_used=result.get("context_used"),
     )
     return {
         "id": msg_id,
@@ -178,6 +192,8 @@ def post_message(conversation_id: int, body: NewMessage):
         "gate": result["gate"],
         "used_docs": result["used_docs"],
         "sources": sources,
+        "context_used": result.get("context_used"),
+        "context_total": result.get("context_total"),
     }
 
 

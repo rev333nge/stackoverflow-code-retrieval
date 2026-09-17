@@ -16,6 +16,7 @@ async function request(path, options) {
 export const api = {
   getStatus: () => request('/status'),
   getModels: () => request('/models'),
+  getModelInfo: (path) => request(`/model-info?path=${encodeURIComponent(path)}`),
   getConversations: () => request('/conversations'),
   createConversation: (title, model) =>
     request('/conversations', { method: 'POST', body: JSON.stringify({ title, model }) }),

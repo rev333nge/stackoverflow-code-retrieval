@@ -22,6 +22,41 @@ function clampInt(value, min, max, fallback) {
   return Math.min(max, Math.max(min, n))
 }
 
+// Compact token count: 8192 -> "8K", 262144 -> "256K".
+function fmtTokens(n) {
+  return n >= 1024 ? `${Math.round(n / 1024)}K` : `${n}`
+}
+
+const CTX_MIN = 2048
+const CTX_FALLBACK_MAX = 32768 // used until the model's real max is known
+
+// Small ring showing how full the model's context window was on the last
+// reply (real prompt tokens ÷ n_ctx). Meaningful now that history fills the
+// window -- it climbs as the conversation grows.
+function ContextRing({ used, total }) {
+  if (used == null || !total) return null
+  const pct = Math.min(1, used / total)
+  const r = 8
+  const circ = 2 * Math.PI * r
+  const label = Math.round(pct * 100)
+  return (
+    <div
+      className="context-ring"
+      title={`Context used on last reply: ${used.toLocaleString()} / ${total.toLocaleString()} tokens (${label}%)`}
+    >
+      <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true">
+        <circle cx="10" cy="10" r={r} fill="none" stroke="var(--border)" strokeWidth="2.5" />
+        <circle
+          cx="10" cy="10" r={r} fill="none" stroke="var(--accent)" strokeWidth="2.5"
+          strokeDasharray={circ} strokeDashoffset={circ * (1 - pct)}
+          strokeLinecap="round" transform="rotate(-90 10 10)"
+        />
+      </svg>
+      <span className="context-ring-label mono">{label}%</span>
+    </div>
+  )
+}
+
 function SettingsIcon() {
   return (
     <svg width="15" height="15" viewBox="0 0 15 15" fill="none" aria-hidden="true">
@@ -36,11 +71,12 @@ function SettingsIcon() {
 // from that conversation's saved value. Generation settings (temperature,
 // max tokens) take effect on the next message; load settings (context, GPU
 // layers) reload the model on the next message -- flagged in their hints.
-function SettingsFields({ conversation, onChange }) {
+function SettingsFields({ conversation, modelMax, onChange }) {
   const [temp, setTemp] = useState(conversation.temperature)
   const [maxTokens, setMaxTokens] = useState(conversation.max_tokens)
   const [nCtx, setNCtx] = useState(conversation.n_ctx)
   const [nGpu, setNGpu] = useState(conversation.n_gpu_layers)
+  const ctxMax = modelMax ?? CTX_FALLBACK_MAX
 
   return (
     <>
@@ -76,13 +112,15 @@ function SettingsFields({ conversation, onChange }) {
       <div className="settings-row">
         <div className="settings-label-line">
           <span className="settings-label mono">context size</span>
-          <input
-            className="settings-num mono" type="number" min="512" max="32768" step="512" value={nCtx}
-            onChange={(e) => setNCtx(e.target.value)}
-            onBlur={() => { const v = clampInt(nCtx, 512, 32768, 8192); setNCtx(v); onChange({ n_ctx: v }) }}
-          />
+          <span className="settings-val mono">{fmtTokens(nCtx)}</span>
         </div>
-        <div className="settings-hint mono">how much history + docs fit at once</div>
+        <input
+          type="range" min={CTX_MIN} max={ctxMax} step="1024" value={Math.min(nCtx, ctxMax)}
+          onChange={(e) => setNCtx(parseInt(e.target.value, 10))}
+          onMouseUp={() => onChange({ n_ctx: nCtx })}
+          onKeyUp={() => onChange({ n_ctx: nCtx })}
+        />
+        <div className="settings-hint mono">history the chat remembers · max {fmtTokens(ctxMax)} for this model · reloads model</div>
       </div>
 
       <div className="settings-row">
@@ -100,7 +138,7 @@ function SettingsFields({ conversation, onChange }) {
   )
 }
 
-function SettingsPanel({ conversation, disabled, onChange }) {
+function SettingsPanel({ conversation, modelMax, disabled, onChange }) {
   const [open, setOpen] = useState(false)
   const wrapRef = useRef(null)
 
@@ -135,7 +173,7 @@ function SettingsPanel({ conversation, disabled, onChange }) {
       </button>
       {open && conversation && (
         <div className="settings-panel" role="dialog" aria-label="Model settings">
-          <SettingsFields key={conversation.id} conversation={conversation} onChange={onChange} />
+          <SettingsFields key={conversation.id} conversation={conversation} modelMax={modelMax} onChange={onChange} />
         </div>
       )}
     </div>
@@ -272,7 +310,7 @@ function ThinkingIndicator() {
   )
 }
 
-export default function ChatWindow({ conversation, messages, models, onChangeModel, onBrowseModel, onChangeSettings, onSend, sending }) {
+export default function ChatWindow({ conversation, messages, models, modelMax, onChangeModel, onBrowseModel, onChangeSettings, onSend, sending }) {
   const [draft, setDraft] = useState('')
   const bottomRef = useRef(null)
 
@@ -291,6 +329,16 @@ export default function ChatWindow({ conversation, messages, models, onChangeMod
   const modelInstalled = conversation ? models.includes(conversation.model) : true
   const modelOptions = conversation && !modelInstalled ? [conversation.model, ...models] : models
 
+  // Context used on the most recent reply (assistant messages carry it), for
+  // the ring. Search from the end so the ring reflects the latest turn.
+  let lastContextUsed = null
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'assistant' && messages[i].context_used != null) {
+      lastContextUsed = messages[i].context_used
+      break
+    }
+  }
+
   return (
     <div className="chat-window">
       <div className="chat-topbar">
@@ -302,16 +350,20 @@ export default function ChatWindow({ conversation, messages, models, onChangeMod
           onChange={onChangeModel}
           onBrowse={onBrowseModel}
         />
-        <SettingsPanel
-          conversation={conversation}
-          disabled={!conversation}
-          onChange={onChangeSettings}
-        />
+        <div className="chat-topbar-right">
+          <ContextRing used={lastContextUsed} total={conversation?.n_ctx} />
+          <SettingsPanel
+            conversation={conversation}
+            modelMax={modelMax}
+            disabled={!conversation}
+            onChange={onChangeSettings}
+          />
+        </div>
       </div>
 
-      {!conversation ? (
+      {messages.length === 0 ? (
         <div className="empty-state">
-          <div className="empty-sq" />
+          <img className="empty-logo" src="/logo.png" alt="" />
           <div className="empty-caption mono">ready to run &middot; {activeModel ? basename(activeModel) : 'no model yet'}</div>
           <div className="composer-wrap">
             <Composer draft={draft} setDraft={setDraft} onSubmit={handleSubmit} sending={sending} />

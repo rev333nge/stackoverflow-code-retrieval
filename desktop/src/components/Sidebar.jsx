@@ -29,8 +29,8 @@ export default function Sidebar({ conversations, activeId, onSelect, onNew, onDe
   return (
     <aside className="sidebar">
       <div className="wordmark">
-        <div className="wordmark-sq" />
-        <span className="mono">SO CHAT</span>
+        <img className="wordmark-logo" src="/logo.png" alt="" />
+        <span className="mono">PY RETRIEVER</span>
       </div>
 
       <button className="new-chat-btn mono" onClick={onNew}>&rarr; new chat</button>
