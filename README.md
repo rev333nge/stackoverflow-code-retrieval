@@ -2,7 +2,7 @@
 
 A code-search engine over Stack Overflow Q&A, built up in stages from a plain BM25 baseline to a hybrid dense/sparse retriever with a learned reranker and a grounded RAG layer on top. Every stage is benchmarked against the one before it on a held-out, time-based test split, using NDCG@10, MRR@10, and Recall@100 against real Stack Overflow signals (accepted answers, scores) as ground truth.
 
-Ships as a desktop app: a FastAPI backend running the retrieval/RAG pipeline locally, wrapped in an Electron + React UI, backed by a local LLM loaded directly from a `.gguf` file (via llama.cpp) -- no external server to run.
+Ships as a desktop app (**PY Retriever**): a FastAPI backend running the retrieval/RAG pipeline locally, wrapped in an Electron + React UI. Generation runs on a local LLM loaded straight from a `.gguf` file you pick (via llama.cpp) — no Ollama or other external server to run.
 
 ## Results
 
@@ -63,19 +63,29 @@ Each script is documented at the top of its file; `scripts/evaluate.py` and `scr
 
 ## Running the desktop app
 
-The backend loads the trained indexes, then loads whichever `.gguf` model you pick from the app's model dropdown (a native "browse for a file" dialog -- point it at any local `.gguf`, e.g. from [Hugging Face](https://huggingface.co/models?library=gguf)). `llama-cpp-python` must be installed with a CUDA-enabled build for GPU offload; see the comment in `requirements.txt`.
-
-```bash
-python -m uvicorn app.server:app --host 127.0.0.1 --port 8756 --reload
-```
-
 ```bash
 cd desktop
 npm install
 npm run dev
 ```
 
-The FastAPI server binds to localhost only and is spawned/killed by the Electron app in a packaged build; the two are run separately here for development.
+`npm run dev` starts the Vite UI and the Electron shell, and Electron spawns the FastAPI backend itself (bound to localhost only), so this one command runs the whole app. To watch backend logs or use auto-reload during development, run the backend separately instead and it will use that one:
+
+```bash
+python -m uvicorn app.server:app --host 127.0.0.1 --port 8756 --reload
+```
+
+Once it's up, pick a model with the browse dialog (any local `.gguf`, e.g. from [Hugging Face](https://huggingface.co/models?library=gguf)) — the app ships no LLM. `llama-cpp-python` must be installed with a CUDA-enabled build for GPU offload; see the comment in `requirements.txt`.
+
+Each conversation carries its own model and generation settings, adjustable from the gear in the top bar:
+
+- **Temperature** and **max tokens** — take effect on the next message.
+- **Context size** (`n_ctx`) — a slider bounded by the model's own trained maximum (read from its GGUF metadata). It sets how much of the conversation the model keeps in context: history is packed in up to this budget (tokenized with the actual model), so a bigger window means a longer memory. A ring in the top bar shows how full the window was on the last reply.
+- **GPU layers** — how much of the model to offload to the GPU; lower it to fit a large model in limited VRAM.
+
+Changing context size or GPU layers reloads the model (a progress bar covers the load); the other two are free.
+
+The adaptive RAG flow decides per message whether to answer directly or search: the model routes the query, and only when it chooses to search does it retrieve, rerank, and answer grounded in the top Stack Overflow answers (shown as clickable sources), gated by a retrieval-confidence check so off-topic questions fall back to the model's own knowledge.
 
 ## Stack
 
