@@ -1,8 +1,6 @@
-
+# stackoverflow-code-retrieval
 
 https://github.com/user-attachments/assets/e78e357a-0a1d-4b22-bc6c-23f0e7a0b78a
-
-# stackoverflow-code-retrieval
 
 A code-search engine over Stack Overflow Q&A, built up in stages from a plain BM25 baseline to a hybrid dense/sparse retriever with a learned reranker and a grounded RAG layer on top. Every stage is benchmarked against the one before it on a held-out, time-based test split, using NDCG@10, MRR@10, and Recall@100 against real Stack Overflow signals (accepted answers, scores) as ground truth.
 
@@ -21,7 +19,7 @@ Corpus scaled from pandas/numpy (537K docs) up to all of Python (3.1M docs); the
 
 Dense retrieval is the single biggest jump: it matches meaning rather than exact terms, so synonyms, typos, and paraphrases that BM25 misses are picked up. BM25 and dense retrieval fail on different queries (correlation ≈ 0.45 between their per-query scores), which is why fusing them and then reranking with a learned model keeps paying off instead of one method just dominating. See [docs/02_results.txt](docs/02_results.txt) and [docs/04_scaling_to_python.txt](docs/04_scaling_to_python.txt) for the full breakdown, including the pandas/numpy-only numbers, hyperparameter sweeps, and a title-ablation study that separates keyword matching from semantic matching.
 
-On top of retrieval, a RAG layer generates synthesized answers from the top reranked results and checks them for grounding with a separate judge model. Across 99 stratified evaluation queries, generated claims were manually checked against their cited sources: about 99% were grounded, with the few hallucinations traced back to a retrieval miss rather than the generator. Retrieval-augmented answers helped most on long-tail questions the base model didn't already know, and added little on common questions it already answered correctly. Details in [docs/PROGRESS.md](docs/PROGRESS.md).
+On top of retrieval, a RAG layer generates synthesized answers from the top reranked results and checks them for grounding with a separate judge model. Across 99 stratified evaluation queries, generated claims were manually checked against their cited sources: about 99% were grounded, with the few hallucinations traced back to a retrieval miss rather than the generator. Retrieval-augmented answers helped most on long-tail questions the base model didn't already know, and added little on common questions it already answered correctly.
 
 ## How it works
 

@@ -163,7 +163,3 @@ PHASE 6 — learning-to-rank (LambdaMART)
     honest figures; 0.8393 is not.
 
 
-NEXT
-    Phase 7   RAG — feed the top reranked answers to a local LLM, generate a
-              synthesized answer, and measure grounding (is the output actually
-              supported by the retrieved answers, or hallucinated).
