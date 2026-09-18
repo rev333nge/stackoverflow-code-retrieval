@@ -2,7 +2,7 @@
 // lifecycle. The backend (FastAPI + AdaptiveRAG) is spawned as a child
 // process bound to 127.0.0.1 -- nothing here is reachable from the network.
 
-import { app, BrowserWindow, dialog, ipcMain } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { spawn, spawnSync } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -100,6 +100,14 @@ async function createWindow() {
       // preload loader wants CommonJS (require), not an ES module.
       preload: path.join(__dirname, 'preload.cjs'),
     },
+  })
+
+  // Source links render with target="_blank" (Message.jsx); without this handler
+  // Electron would either open them in a bare chromeless window or drop them, so
+  // hand them off to the OS default browser instead.
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    shell.openExternal(url)
+    return { action: 'deny' }
   })
 
   if (!app.isPackaged) {
