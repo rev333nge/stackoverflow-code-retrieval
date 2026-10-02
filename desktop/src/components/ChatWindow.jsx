@@ -346,7 +346,6 @@ export default function ChatWindow({ conversation, messages, models, modelMax, o
           activeModel={activeModel}
           modelOptions={modelOptions}
           models={models}
-          disabled={!conversation}
           onChange={onChangeModel}
           onBrowse={onBrowseModel}
         />

@@ -166,7 +166,14 @@ export default function App() {
   }
 
   async function handleChangeModel(model) {
-    if (!activeConversation) return
+    // No chat open (e.g. a fresh install with empty history): picking a model
+    // starts a new chat with it, rather than the picker being a dead control.
+    if (!activeConversation) {
+      const conv = await api.createConversation(DEFAULT_TITLE, model)
+      setConversations((prev) => [conv, ...prev])
+      setActiveId(conv.id)
+      return
+    }
     await api.updateConversation(activeConversation.id, { model })
     setConversations((prev) =>
       prev.map((c) => (c.id === activeConversation.id ? { ...c, model } : c)),
